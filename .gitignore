@@ -30,8 +30,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files (NEVER commit - contains API keys and secrets)
 .env*
+
+# plaintext sensitive data (encrypted versions .enc are safe to commit)
+data/students.json
+data/schedules.json
+
+# encryption scripts (contain key references)
+scripts/
 
 # vercel
 .vercel

@@ -1,11 +1,22 @@
-import studentsData from "@/data/students.json";
+import { findStudent } from "@/lib/secure-data";
+import { createSessionToken } from "@/lib/session";
+import { rateLimitGuard } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
+  const blocked = rateLimitGuard(request, 10);
+  if (blocked) return blocked;
+
   const { studentId } = await request.json();
 
-  const student = studentsData.students.find(
-    (s) => s.studentId === studentId
-  );
+  if (!studentId || typeof studentId !== "string" || studentId.length > 20) {
+    return Response.json(
+      { success: false, message: "无效的学号格式" },
+      { status: 400 }
+    );
+  }
+
+  const sanitizedId = studentId.replace(/[^a-zA-Z0-9]/g, "");
+  const student = findStudent(sanitizedId);
 
   if (!student) {
     return Response.json(
@@ -14,8 +25,11 @@ export async function POST(request: Request) {
     );
   }
 
+  const token = createSessionToken(student.studentId);
+
   return Response.json({
     success: true,
+    token,
     student: {
       studentId: student.studentId,
       name: student.name,

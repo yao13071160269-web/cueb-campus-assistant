@@ -15,7 +15,11 @@ interface Notification {
   keywords: string[];
 }
 
-export default function NotificationCenter() {
+interface NotificationCenterProps {
+  token: string;
+}
+
+export default function NotificationCenter({ token }: NotificationCenterProps) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isOpen, setIsOpen] = useState(false);
@@ -26,7 +30,9 @@ export default function NotificationCenter() {
 
   const fetchNotifications = useCallback(async () => {
     try {
-      const res = await fetch("/api/notifications");
+      const res = await fetch("/api/notifications", {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
       if (!res.ok) return;
       const data = await res.json();
       setNotifications(data.notifications || []);
@@ -59,7 +65,10 @@ export default function NotificationCenter() {
   async function handleMarkRead(id: string) {
     await fetch("/api/notifications", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
       body: JSON.stringify({ action: "mark_read", id }),
     });
     setNotifications((prev) =>
@@ -72,7 +81,10 @@ export default function NotificationCenter() {
     setLoading(true);
     await fetch("/api/notifications", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
       body: JSON.stringify({ action: "mark_all_read" }),
     });
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));

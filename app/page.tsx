@@ -15,28 +15,36 @@ interface Student {
 
 export default function Home() {
   const [student, setStudent] = useState<Student | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
-    const saved = localStorage.getItem("cueb_student");
-    if (saved) {
+    const savedStudent = sessionStorage.getItem("cueb_student");
+    const savedToken = sessionStorage.getItem("cueb_token");
+    if (savedStudent && savedToken) {
       try {
-        setStudent(JSON.parse(saved));
+        setStudent(JSON.parse(savedStudent));
+        setToken(savedToken);
       } catch {
-        localStorage.removeItem("cueb_student");
+        sessionStorage.removeItem("cueb_student");
+        sessionStorage.removeItem("cueb_token");
       }
     }
   }, []);
 
-  function handleLogin(s: Student) {
+  function handleLogin(s: Student, t: string) {
     setStudent(s);
-    localStorage.setItem("cueb_student", JSON.stringify(s));
+    setToken(t);
+    sessionStorage.setItem("cueb_student", JSON.stringify(s));
+    sessionStorage.setItem("cueb_token", t);
   }
 
   function handleLogout() {
     setStudent(null);
-    localStorage.removeItem("cueb_student");
+    setToken(null);
+    sessionStorage.removeItem("cueb_student");
+    sessionStorage.removeItem("cueb_token");
   }
 
   if (!mounted) {
@@ -58,9 +66,9 @@ export default function Home() {
     );
   }
 
-  if (!student) {
+  if (!student || !token) {
     return <LoginModal onLogin={handleLogin} />;
   }
 
-  return <ChatInterface student={student} onLogout={handleLogout} />;
+  return <ChatInterface student={student} token={token} onLogout={handleLogout} />;
 }

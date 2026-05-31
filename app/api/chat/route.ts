@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "@/data/knowledge";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tools";
+import { requireAuth } from "@/lib/session";
+import { rateLimitGuard } from "@/lib/rate-limit";
 
 let _client: OpenAI | null = null;
 function getClient() {
@@ -20,10 +22,16 @@ interface ChatMessage {
 }
 
 export async function POST(request: Request) {
-  const { messages, studentId } = (await request.json()) as {
+  const blocked = rateLimitGuard(request, 20);
+  if (blocked) return blocked;
+
+  const auth = requireAuth(request);
+  if (auth instanceof Response) return auth;
+
+  const { messages } = (await request.json()) as {
     messages: ChatMessage[];
-    studentId: string;
   };
+  const studentId = auth.studentId;
 
   const now = new Date();
   const dayNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];

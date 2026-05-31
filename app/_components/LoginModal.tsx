@@ -12,7 +12,7 @@ interface Student {
 }
 
 interface LoginModalProps {
-  onLogin: (student: Student) => void;
+  onLogin: (student: Student, token: string) => void;
 }
 
 const TEST_ACCOUNTS = [
@@ -44,8 +44,8 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
         body: JSON.stringify({ studentId: loginId }),
       });
       const data = await res.json();
-      if (data.success) {
-        onLogin(data.student);
+      if (data.success && data.token) {
+        onLogin(data.student, data.token);
       } else {
         setError(data.message);
       }

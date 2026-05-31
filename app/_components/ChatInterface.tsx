@@ -37,6 +37,7 @@ interface Message {
 
 interface ChatInterfaceProps {
   student: Student;
+  token: string;
   onLogout: () => void;
 }
 
@@ -57,7 +58,7 @@ function renderContent(text: string) {
   return <span className="chat-content" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-export default function ChatInterface({ student, onLogout }: ChatInterfaceProps) {
+export default function ChatInterface({ student, token, onLogout }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -108,8 +109,11 @@ export default function ChatInterface({ student, onLogout }: ChatInterfaceProps)
 
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: chatHistory, studentId: student.studentId }),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ messages: chatHistory }),
       });
 
       const data = await res.json();
@@ -241,7 +245,7 @@ export default function ChatInterface({ student, onLogout }: ChatInterfaceProps)
             <span className="text-sm text-gray-500">在线</span>
           </div>
           <div className="flex-1" />
-          <NotificationCenter />
+          <NotificationCenter token={token} />
           <span className="text-xs text-gray-300 ml-2">Powered by DeepSeek</span>
         </header>
 

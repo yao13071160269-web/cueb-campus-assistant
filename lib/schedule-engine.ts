@@ -1,4 +1,4 @@
-import schedulesData from "@/data/schedules.json";
+import { getSchedules } from "@/lib/secure-data";
 
 const DAY_MAP: Record<number, string> = {
   0: "周日", 1: "周一", 2: "周二", 3: "周三",
@@ -28,7 +28,8 @@ interface ScheduleQueryResult {
 }
 
 function getTeachingWeek(date: Date): number {
-  const weekStart = new Date((schedulesData as Record<string, unknown>).teachingWeekStart as string);
+  const schedulesData = getSchedules();
+  const weekStart = new Date(schedulesData.teachingWeekStart as string);
   weekStart.setHours(0, 0, 0, 0);
   const target = new Date(date);
   target.setHours(0, 0, 0, 0);
@@ -54,11 +55,12 @@ export function querySchedule(
   queryType: "today" | "tomorrow" | "next" | "week" | "specific_day",
   specificDay?: string
 ): ScheduleQueryResult {
+  const schedulesData = getSchedules();
   const data = schedulesData as unknown as Record<string, { name: string; weeklySchedule: Record<string, CourseInfo[]> }>;
   const student = data[studentId];
 
   if (!student) {
-    return { found: false, message: "未找到该学号对应的课表信息。可用学号：32025120067（程心阳）、32025040112（周思安）、32025270095（姚上）、32025270008（起飞翔）、32025040107（刘紫函）" };
+    return { found: false, message: "未找到该学号对应的课表信息，请确认登录的账号是否正确。" };
   }
 
   const now = new Date();
