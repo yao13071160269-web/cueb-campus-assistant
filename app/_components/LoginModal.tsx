@@ -15,14 +15,6 @@ interface LoginModalProps {
   onLogin: (student: Student, token: string) => void;
 }
 
-const TEST_ACCOUNTS = [
-  { id: "32025120067", label: "程心阳 - 统计与数据科学学院" },
-  { id: "32025040112", label: "周思安 - 会计学院" },
-  { id: "32025270095", label: "姚上 - 人工智能学院" },
-  { id: "32025270008", label: "起飞翔 - 人工智能学院" },
-  { id: "32025040107", label: "刘紫函 - 会计学院" },
-];
-
 export default function LoginModal({ onLogin }: LoginModalProps) {
   const [studentId, setStudentId] = useState("");
   const [error, setError] = useState("");
@@ -85,7 +77,7 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
               value={studentId}
               onChange={(e) => { setStudentId(e.target.value); setError(""); }}
               onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-              placeholder="请输入虚拟学号"
+              placeholder="请输入学号"
               className="w-full h-12 px-4 rounded-xl border border-gray-200 bg-gray-50 text-base
                          focus:outline-none focus:ring-2 focus:ring-cueb-red/30 focus:border-cueb-red
                          transition-all placeholder:text-gray-400"
@@ -111,30 +103,8 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
           </button>
         </div>
 
-        {/* Quick Login */}
-        <div className="mt-8">
-          <p className="text-xs text-gray-400 text-center mb-3">沙箱测试账户（点击快速登录）</p>
-          <div className="grid grid-cols-1 gap-2">
-            {TEST_ACCOUNTS.map((account) => (
-              <button
-                key={account.id}
-                onClick={() => { setStudentId(account.id); handleLogin(account.id); }}
-                disabled={loading}
-                className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-gray-100
-                           hover:border-cueb-red/30 hover:bg-red-50/50 transition-all text-left
-                           disabled:opacity-50"
-              >
-                <span className="font-mono text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
-                  {account.id}
-                </span>
-                <span className="text-sm text-gray-600">{account.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
         <p className="mt-8 text-center text-xs text-gray-300">
-          沙箱模式 · 无需真实密码 · 数据仅用于演示
+          输入学号即可登录 · 数据已加密保护
         </p>
       </div>
     </div>
