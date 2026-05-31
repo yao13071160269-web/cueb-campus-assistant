@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CUEB 校园助手 — 首都经济贸易大学 AI 智能体
 
-## Getting Started
+基于 Next.js + DeepSeek AI 的校园智能助手，提供课表查询、图书馆选座、活动通知、办事流程指引、心理健康支持等功能。
 
-First, run the development server:
+## 快速启动
+
+### 环境要求
+
+- **Node.js** 18 或以上版本（[下载地址](https://nodejs.org/)）
+- **DeepSeek API Key**（[申请地址](https://platform.deepseek.com/)）
+
+### Windows 一键启动
+
+双击运行 `setup.bat`，按提示输入 DeepSeek API Key 即可。
+
+### 手动启动
 
 ```bash
+# 1. 安装依赖
+npm install
+
+# 2. 配置环境变量（复制模板并填入 API Key）
+copy .env.example .env.local
+# 编辑 .env.local，填入 DEEPSEEK_API_KEY
+
+# 3. 启动开发服务器
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+启动后访问 **http://localhost:3000**
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 功能特性
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **智能对话**：基于 DeepSeek 大模型，扮演首经贸"老学长"角色
+- **课表查询**：根据当前教学周和时间，精准查询课程安排
+- **图书馆选座**：实时查看各楼层座位情况并预约
+- **活动通知**：监控首经贸官方微信公众号推送
+- **办事指南**：涵盖教务、医疗报销、心理咨询等完整流程
+- **心理支持**：融合首经贸校园特色的趣味解压方式
 
-## Learn More
+## 安全机制
 
-To learn more about Next.js, take a look at the following resources:
+- 学生数据 AES-256-GCM 加密存储
+- HMAC 会话令牌认证
+- API 速率限制
+- 安全响应头（CSP / X-Frame-Options / XSS Protection）
+- 敏感信息仅通过环境变量加载
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 技术栈
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Next.js 16 · React · TypeScript · Tailwind CSS · DeepSeek API · AES-256-GCM
