@@ -2,10 +2,16 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "@/data/knowledge";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tools";
 
-const client = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY,
-  baseURL: "https://api.deepseek.com",
-});
+let _client: OpenAI | null = null;
+function getClient() {
+  if (!_client) {
+    _client = new OpenAI({
+      apiKey: process.env.DEEPSEEK_API_KEY,
+      baseURL: "https://api.deepseek.com",
+    });
+  }
+  return _client;
+}
 
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
@@ -40,6 +46,7 @@ export async function POST(request: Request) {
   ];
 
   try {
+    const client = getClient();
     let response = await client.chat.completions.create({
       model: "deepseek-chat",
       messages: apiMessages,
