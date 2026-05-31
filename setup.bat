@@ -51,13 +51,14 @@ if %errorlevel% neq 0 (
 )
 echo [OK] 依赖安装完成
 
-:: Start the server
+:: Start the server and open browser
 echo.
 echo ========================================
-echo   启动成功！请在浏览器中访问：
-echo   http://localhost:3000
+echo   正在启动服务器...
+echo   浏览器将自动打开 http://localhost:3000
 echo.
 echo   按 Ctrl+C 停止服务器
 echo ========================================
 echo.
+start "" http://localhost:3000
 npm run dev
