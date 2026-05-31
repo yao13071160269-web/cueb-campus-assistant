@@ -1,6 +1,7 @@
 import { querySchedule } from "@/lib/schedule-engine";
 import { getLibraryStatus, bookSeat } from "@/lib/seat-engine";
 import { getWechatArticles, getNoDataMessage } from "@/lib/wechat-monitor";
+import { searchWechatHistory } from "@/lib/wechat-history";
 
 export const TOOL_DEFINITIONS = [
   {
@@ -83,6 +84,30 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
+      name: "search_wechat_history",
+      description:
+        "搜索微信公众号的历史文章。可以查询首经贸EDA创展、CUEBCDA、首都经济贸易大学学生处等公众号的历史课堂预约、活动报名、通知公告等信息。",
+      parameters: {
+        type: "object",
+        properties: {
+          account: {
+            type: "string",
+            description:
+              "公众号名称，如：首经贸EDA创展、CUEBCDA、学生处",
+          },
+          keyword: {
+            type: "string",
+            description:
+              "搜索关键词，如：课堂预约、活动报名、讲座、比赛、通知等。留空则查询全部历史文章。",
+          },
+        },
+        required: ["account"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "web_search",
       description:
         "联网搜索学术知识、技术文档、办事攻略等。用于代码Debug、学术概念解析、官方文档检索等。",
@@ -130,6 +155,11 @@ export async function executeTool(
         return JSON.stringify({ articles: [], message: getNoDataMessage() });
       }
       return JSON.stringify(articles, null, 2);
+    }
+
+    case "search_wechat_history": {
+      const result = await searchWechatHistory(args.account, args.keyword || "");
+      return JSON.stringify(result, null, 2);
     }
 
     case "web_search": {
