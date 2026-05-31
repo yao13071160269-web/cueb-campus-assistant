@@ -3,6 +3,7 @@ import { SYSTEM_PROMPT } from "@/data/knowledge";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tools";
 import { requireAuth } from "@/lib/session";
 import { rateLimitGuard } from "@/lib/rate-limit";
+import { getBeijingNow } from "@/lib/beijing-time";
 
 let _client: OpenAI | null = null;
 function getClient() {
@@ -33,9 +34,9 @@ export async function POST(request: Request) {
   };
   const studentId = auth.studentId;
 
-  const now = new Date();
+  const now = getBeijingNow();
   const dayNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const timeContext = `\n\n[当前时间信息] ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${dayNames[now.getDay()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}\n[当前登录学号] ${studentId}`;
+  const timeContext = `\n\n[当前时间信息] ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${dayNames[now.getDay()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}（北京时间）\n[当前登录学号] ${studentId}`;
 
   const systemMessage = SYSTEM_PROMPT + timeContext;
 

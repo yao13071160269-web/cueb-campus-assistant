@@ -1,4 +1,5 @@
 import seatsData from "@/data/seats.json";
+import { getBeijingNow } from "@/lib/beijing-time";
 
 export interface SeatStatus {
   zoneId: string;
@@ -57,7 +58,7 @@ function getHeatLevel(rate: number): "high" | "medium" | "low" {
 }
 
 export function getLibraryStatus(): SeatStatus[] {
-  const now = new Date();
+  const now = getBeijingNow();
   const hour = now.getHours();
   const minute = now.getMinutes();
   const dayOfWeek = now.getDay();
@@ -108,7 +109,7 @@ export function bookSeat(zoneId: string, studentId: string): BookingResult {
   }
 
   const seatNum = Math.floor(Math.random() * zone.totalSeats) + 1;
-  const now = new Date();
+  const now = getBeijingNow();
   const validUntil = new Date(now.getTime() + 4 * 60 * 60 * 1000);
 
   const bookingId = `CUEB${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}`;

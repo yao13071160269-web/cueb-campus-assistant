@@ -1,4 +1,5 @@
 import { getSchedules } from "@/lib/secure-data";
+import { getBeijingNow } from "@/lib/beijing-time";
 
 const DAY_MAP: Record<number, string> = {
   0: "周日", 1: "周一", 2: "周二", 3: "周三",
@@ -63,7 +64,7 @@ export function querySchedule(
     return { found: false, message: "未找到该学号对应的课表信息，请确认登录的账号是否正确。" };
   }
 
-  const now = new Date();
+  const now = getBeijingNow();
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const todayIndex = now.getDay();
   const currentWeek = getTeachingWeek(now);
