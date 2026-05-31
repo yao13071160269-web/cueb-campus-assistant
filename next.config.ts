@@ -19,7 +19,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https:",
               "font-src 'self' data:",
-              "connect-src 'self' https://api.deepseek.com https://api.tavily.com https://r.jina.ai",
+              "connect-src 'self' https://api.deepseek.com https://api.tavily.com https://r.jina.ai https://s.jina.ai",
               "frame-ancestors 'none'",
             ].join("; "),
           },

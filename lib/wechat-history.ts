@@ -12,118 +12,132 @@ const ACCOUNT_MAP: Record<string, string> = {
   "首经贸EDA创展": "首经贸EDA创展",
   "EDA创展": "首经贸EDA创展",
   "EDA": "首经贸EDA创展",
+  "eda": "首经贸EDA创展",
   "CUEBCDA": "CUEBCDA",
   "CDA": "CUEBCDA",
+  "cda": "CUEBCDA",
   "学生处": "首都经济贸易大学学生处",
+  "首经贸学生处": "首都经济贸易大学学生处",
 };
 
 function resolveAccount(input: string): string {
   for (const [key, value] of Object.entries(ACCOUNT_MAP)) {
-    if (input.includes(key)) return value;
+    if (input.toLowerCase().includes(key.toLowerCase())) return value;
   }
   return input;
 }
 
-async function searchViaSogou(account: string, keyword: string): Promise<HistoryArticle[]> {
-  const query = keyword ? `${account} ${keyword}` : account;
-  const sogouUrl = `https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(query)}`;
-
+async function searchViaJinaSearch(query: string): Promise<HistoryArticle[]> {
   try {
-    const jinaRes = await fetch(`https://r.jina.ai/${encodeURIComponent(sogouUrl)}`, {
+    const res = await fetch(`https://s.jina.ai/${encodeURIComponent(query)}`, {
       headers: {
-        "Accept": "text/plain",
-        "X-Return-Format": "text",
+        "Accept": "application/json",
+        "X-Return-Format": "json",
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(20000),
     });
+    if (!res.ok) return [];
 
-    if (!jinaRes.ok) throw new Error(`Jina error: ${jinaRes.status}`);
-    const text = await jinaRes.text();
-    return parseSogouResults(text, account);
+    const contentType = res.headers.get("content-type") || "";
+    let results: Array<{ title?: string; url?: string; description?: string; content?: string; published?: string }> = [];
+
+    if (contentType.includes("application/json")) {
+      const data = await res.json();
+      results = data.data || data.results || data || [];
+    } else {
+      const text = await res.text();
+      return parseMarkdownResults(text);
+    }
+
+    if (!Array.isArray(results)) return [];
+
+    return results
+      .filter((r) => r.url && (r.url.includes("mp.weixin.qq.com") || r.url.includes("weixin")))
+      .map((r) => ({
+        title: (r.title || "").replace(/<[^>]*>/g, "").trim(),
+        source: extractSource(r.title || "", r.description || r.content || ""),
+        url: r.url || "",
+        snippet: ((r.description || r.content || "").replace(/<[^>]*>/g, "")).slice(0, 200).trim(),
+        publishTime: r.published || extractDate(r.description || r.content || ""),
+      }))
+      .slice(0, 10);
   } catch {
     return [];
   }
 }
 
-function parseSogouResults(text: string, account: string): HistoryArticle[] {
+function parseMarkdownResults(text: string): HistoryArticle[] {
   const articles: HistoryArticle[] = [];
-  const lines = text.split("\n");
+  const blocks = text.split(/\n(?=\[|\#{1,3}\s)/);
 
-  let currentTitle = "";
-  let currentUrl = "";
-  let currentSnippet = "";
-  let currentSource = account;
-  let currentTime = "";
+  for (const block of blocks) {
+    const linkMatch = block.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+mp\.weixin\.qq\.com[^\s)]*)\)/);
+    if (!linkMatch) continue;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+    const title = linkMatch[1].replace(/<[^>]*>/g, "").trim();
+    const url = linkMatch[2];
+    if (!title || title.length < 4) continue;
 
-    const titleMatch = trimmed.match(/^\[(.+?)\]\((https?:\/\/.+?)\)$/);
-    if (titleMatch) {
-      if (currentTitle) {
-        articles.push({
-          title: currentTitle,
-          source: currentSource,
-          url: currentUrl,
-          snippet: currentSnippet.slice(0, 200),
-          publishTime: currentTime,
-        });
-      }
-      currentTitle = titleMatch[1];
-      currentUrl = titleMatch[2];
-      currentSnippet = "";
-      currentTime = "";
-      continue;
-    }
+    const snippet = block
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/<[^>]*>/g, "")
+      .replace(/#{1,3}\s/g, "")
+      .trim()
+      .slice(0, 200);
 
-    const linkMatch = trimmed.match(/^\[(.+?)\]\((https?:\/\/mp\.weixin\.qq\.com.+?)\)/);
-    if (linkMatch) {
-      if (currentTitle) {
-        articles.push({
-          title: currentTitle,
-          source: currentSource,
-          url: currentUrl,
-          snippet: currentSnippet.slice(0, 200),
-          publishTime: currentTime,
-        });
-      }
-      currentTitle = linkMatch[1];
-      currentUrl = linkMatch[2];
-      currentSnippet = "";
-      currentTime = "";
-      continue;
-    }
-
-    const dateMatch = trimmed.match(/(\d{4})[年-](\d{1,2})[月-](\d{1,2})/);
-    if (dateMatch && currentTitle) {
-      currentTime = `${dateMatch[1]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[3].padStart(2, "0")}`;
-    }
-
-    if (currentTitle && trimmed.length > 10 && !trimmed.startsWith("[") && !trimmed.startsWith("http")) {
-      if (!currentSnippet) currentSnippet = trimmed;
-    }
-  }
-
-  if (currentTitle) {
     articles.push({
-      title: currentTitle,
-      source: currentSource,
-      url: currentUrl,
-      snippet: currentSnippet.slice(0, 200),
-      publishTime: currentTime,
+      title,
+      source: extractSource(title, snippet),
+      url,
+      snippet,
+      publishTime: extractDate(block),
     });
   }
 
   return articles.slice(0, 10);
 }
 
-async function searchViaTavily(account: string, keyword: string): Promise<HistoryArticle[]> {
+async function searchViaBing(query: string): Promise<HistoryArticle[]> {
+  const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`;
+  try {
+    const res = await fetch(`https://r.jina.ai/${encodeURIComponent(bingUrl)}`, {
+      headers: {
+        "Accept": "text/plain",
+        "X-Return-Format": "text",
+        "X-Timeout": "15",
+      },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return [];
+    const text = await res.text();
+    return parseMarkdownResults(text);
+  } catch {
+    return [];
+  }
+}
+
+async function searchViaGoogle(query: string): Promise<HistoryArticle[]> {
+  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=15`;
+  try {
+    const res = await fetch(`https://r.jina.ai/${encodeURIComponent(googleUrl)}`, {
+      headers: {
+        "Accept": "text/plain",
+        "X-Return-Format": "text",
+        "X-Timeout": "15",
+      },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return [];
+    const text = await res.text();
+    return parseMarkdownResults(text);
+  } catch {
+    return [];
+  }
+}
+
+async function searchViaTavily(query: string): Promise<HistoryArticle[]> {
   const tavilyKey = process.env.TAVILY_API_KEY;
   if (!tavilyKey) return [];
-
-  const query = keyword
-    ? `site:mp.weixin.qq.com ${account} ${keyword}`
-    : `site:mp.weixin.qq.com ${account}`;
 
   try {
     const res = await fetch("https://api.tavily.com/search", {
@@ -138,22 +152,46 @@ async function searchViaTavily(account: string, keyword: string): Promise<Histor
       }),
       signal: AbortSignal.timeout(15000),
     });
-
     if (!res.ok) return [];
     const data = await res.json();
 
     return (data.results || []).map(
       (r: { title: string; url: string; content: string; published_date?: string }) => ({
-        title: r.title || "",
-        source: account,
+        title: (r.title || "").trim(),
+        source: extractSource(r.title || "", r.content || ""),
         url: r.url || "",
-        snippet: (r.content || "").slice(0, 200),
+        snippet: (r.content || "").slice(0, 200).trim(),
         publishTime: r.published_date || "",
       })
     );
   } catch {
     return [];
   }
+}
+
+function extractSource(title: string, text: string): string {
+  const combined = title + " " + text;
+  if (combined.includes("EDA创展") || combined.includes("EDA")) return "首经贸EDA创展";
+  if (combined.includes("CUEBCDA") || combined.includes("CDA")) return "CUEBCDA";
+  if (combined.includes("学生处")) return "首都经济贸易大学学生处";
+  if (combined.includes("首经贸") || combined.includes("首都经济贸易")) return "首都经济贸易大学";
+  return "";
+}
+
+function extractDate(text: string): string {
+  const m = text.match(/(\d{4})[年\-\/.](\d{1,2})[月\-\/.](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  return "";
+}
+
+function dedup(articles: HistoryArticle[]): HistoryArticle[] {
+  const seen = new Set<string>();
+  return articles.filter((a) => {
+    const key = a.title.slice(0, 20);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function searchWechatHistory(
@@ -164,21 +202,53 @@ export async function searchWechatHistory(
   const now = getBeijingNow();
   const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
-  let articles = await searchViaSogou(resolvedAccount, keyword);
+  const siteQuery = keyword
+    ? `site:mp.weixin.qq.com "${resolvedAccount}" ${keyword}`
+    : `site:mp.weixin.qq.com "${resolvedAccount}"`;
 
-  if (articles.length === 0) {
-    articles = await searchViaTavily(resolvedAccount, keyword);
+  const weixinQuery = keyword
+    ? `微信公众号 ${resolvedAccount} ${keyword}`
+    : `微信公众号 ${resolvedAccount}`;
+
+  const [jinaResults, bingResults, googleResults, tavilyResults] = await Promise.allSettled([
+    searchViaJinaSearch(siteQuery),
+    searchViaBing(siteQuery),
+    searchViaGoogle(siteQuery),
+    searchViaTavily(weixinQuery),
+  ]);
+
+  let allArticles: HistoryArticle[] = [];
+  if (jinaResults.status === "fulfilled") allArticles.push(...jinaResults.value);
+  if (bingResults.status === "fulfilled") allArticles.push(...bingResults.value);
+  if (googleResults.status === "fulfilled") allArticles.push(...googleResults.value);
+  if (tavilyResults.status === "fulfilled") allArticles.push(...tavilyResults.value);
+
+  allArticles = dedup(allArticles).slice(0, 15);
+
+  if (allArticles.length === 0) {
+    const fallbackQuery = keyword
+      ? `${resolvedAccount} ${keyword} 微信公众号`
+      : `${resolvedAccount} 微信公众号 活动 预约`;
+
+    const [fallbackJina, fallbackBing] = await Promise.allSettled([
+      searchViaJinaSearch(fallbackQuery),
+      searchViaBing(fallbackQuery),
+    ]);
+
+    if (fallbackJina.status === "fulfilled") allArticles.push(...fallbackJina.value);
+    if (fallbackBing.status === "fulfilled") allArticles.push(...fallbackBing.value);
+    allArticles = dedup(allArticles).slice(0, 15);
   }
 
-  if (articles.length === 0) {
+  if (allArticles.length === 0) {
     return {
       articles: [],
-      message: `未搜索到「${resolvedAccount}」${keyword ? `中关于「${keyword}」` : ""}的历史文章。建议直接在微信中搜索该公众号查看历史消息。\n\n也可以尝试访问搜狗微信搜索：https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(resolvedAccount + (keyword ? " " + keyword : ""))}`,
+      message: `查询时间：${timeStr}（北京时间）\n\n未能从搜索引擎中找到「${resolvedAccount}」${keyword ? `关于「${keyword}」` : ""}的历史文章。\n\n可能原因：搜索引擎尚未收录、文章标题不完全匹配、或网络访问受限。\n\n建议：\n1. 在微信中搜索公众号「${resolvedAccount}」→ 查看历史消息\n2. 访问搜狗微信搜索：https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(resolvedAccount + (keyword ? " " + keyword : ""))}\n3. 尝试换个关键词，如"预约""报名""讲座""活动"`,
     };
   }
 
   return {
-    articles,
-    message: `查询时间：${timeStr}（北京时间），共找到 ${articles.length} 条「${resolvedAccount}」${keyword ? `关于「${keyword}」` : ""}的历史文章。以下为搜索结果，数据来自公开搜索引擎。`,
+    articles: allArticles,
+    message: `查询时间：${timeStr}（北京时间），共找到 ${allArticles.length} 条「${resolvedAccount}」${keyword ? `关于「${keyword}」` : ""}的历史文章。数据来自公开搜索引擎索引。`,
   };
 }
