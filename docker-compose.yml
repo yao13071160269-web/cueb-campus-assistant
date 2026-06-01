@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  werss:
+    image: rachelos/we-mp-rss:latest
+    container_name: cueb-werss
+    ports:
+      - "8001:8001"
+    volumes:
+      - werss-data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - USERNAME=admin
+      - PASSWORD=cueb2025
+      - ENABLE_JOB=True
+      - SPAN_INTERVAL=10
+      - GATHER.CONTENT=True
+      - GATHER.MODEL=web
+      - GATHER.CONTENT_AUTO_CHECK=True
+      - GATHER.CONTENT_AUTO_INTERVAL=30
+      - MAX_PAGE=5
+      # 新文章自动推送到我们的 Next.js 通知中心
+      - CUSTOM_WEBHOOK=http://host.docker.internal:3000/api/webhook/wechat
+      - WEBHOOK.CONTENT_FORMAT=text
+    restart: unless-stopped
+
+volumes:
+  werss-data:
+    driver: local

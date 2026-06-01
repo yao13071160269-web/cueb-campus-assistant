@@ -63,8 +63,34 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [wxExpired, setWxExpired] = useState(false);
+  const [wxExpiringSoon, setWxExpiringSoon] = useState(false);
+  const [showWxBanner, setShowWxBanner] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    async function checkWxStatus() {
+      try {
+        const res = await fetch("/api/admin/wechat?action=status");
+        const data = await res.json();
+        if (!data.loggedIn) {
+          setWxExpired(true);
+          setWxExpiringSoon(false);
+        } else if (data.expiresAt) {
+          const hoursLeft = (data.expiresAt - Date.now()) / (3600 * 1000);
+          setWxExpired(false);
+          setWxExpiringSoon(hoursLeft < 12);
+        } else {
+          setWxExpired(false);
+          setWxExpiringSoon(false);
+        }
+      } catch { /* ignore */ }
+    }
+    checkWxStatus();
+    const iv = setInterval(checkWxStatus, 5 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -246,8 +272,47 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
           </div>
           <div className="flex-1" />
           <NotificationCenter token={token} />
-          <span className="text-xs text-gray-300 ml-2">Powered by DeepSeek</span>
+          <a
+            href="/admin"
+            target="_blank"
+            className="text-xs text-gray-400 hover:text-cueb-red transition-colors px-2 py-1 rounded"
+            title="微信公众号监控管理"
+          >
+            监控管理
+          </a>
+          <span className="text-xs text-gray-300 ml-1">Powered by DeepSeek</span>
         </header>
+
+        {/* Wx session expiration banner */}
+        {showWxBanner && (wxExpired || wxExpiringSoon) && (
+          <div
+            className={`flex items-center justify-between px-4 py-2 text-xs ${
+              wxExpired
+                ? "bg-red-50 text-red-600"
+                : "bg-yellow-50 text-yellow-700"
+            }`}
+          >
+            <span>
+              {wxExpired
+                ? "⚠ 微信公众号连接已过期，活动数据暂停更新"
+                : "⏰ 微信公众号连接即将过期，请尽快续期"}
+              {" — "}
+              <a
+                href="/admin"
+                target="_blank"
+                className="underline font-medium"
+              >
+                前往扫码续期
+              </a>
+            </span>
+            <button
+              onClick={() => setShowWxBanner(false)}
+              className="ml-2 opacity-60 hover:opacity-100"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-6">

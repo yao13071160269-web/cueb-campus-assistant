@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface Student {
   studentId: string;
@@ -19,6 +19,40 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
   const [studentId, setStudentId] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showWxPanel, setShowWxPanel] = useState(false);
+  const [wxStatus, setWxStatus] = useState<{
+    loggedIn: boolean;
+    hasQrCode: boolean;
+    isPolling: boolean;
+    error: string;
+  } | null>(null);
+  const [wxLoading, setWxLoading] = useState(false);
+  const [qrTs, setQrTs] = useState(0);
+
+  const fetchWxStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/wechat?action=status");
+      const data = await res.json();
+      setWxStatus(data);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (!showWxPanel) return;
+    fetchWxStatus();
+    const iv = setInterval(fetchWxStatus, 3000);
+    return () => clearInterval(iv);
+  }, [showWxPanel, fetchWxStatus]);
+
+  async function handleRequestQr() {
+    setWxLoading(true);
+    try {
+      const res = await fetch("/api/admin/wechat?action=qrcode", { method: "POST" });
+      const data = await res.json();
+      if (data.success) setQrTs(Date.now());
+    } catch { /* ignore */ }
+    setWxLoading(false);
+  }
 
   async function handleLogin(id?: string) {
     const loginId = id || studentId;
@@ -106,6 +140,113 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
         <p className="mt-8 text-center text-xs text-gray-300">
           输入学号即可登录 · 数据已加密保护
         </p>
+
+        {/* Admin WeChat Auth Panel */}
+        <div className="mt-6 border-t border-gray-100 pt-5">
+          <button
+            onClick={() => setShowWxPanel(!showWxPanel)}
+            className="w-full flex items-center justify-center gap-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            管理员：微信公众号数据源配置
+            <svg
+              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              className={`transition-transform ${showWxPanel ? "rotate-180" : ""}`}
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          {showWxPanel && (
+            <div className="mt-4 p-4 rounded-xl bg-gray-50 border border-gray-100 space-y-3">
+              {/* Status */}
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                    wxStatus === null
+                      ? "bg-gray-300"
+                      : wxStatus.loggedIn
+                        ? "bg-green-400"
+                        : wxStatus.isPolling
+                          ? "bg-yellow-400 animate-pulse"
+                          : "bg-red-400"
+                  }`}
+                />
+                <span className="text-xs text-gray-600">
+                  {wxStatus === null
+                    ? "检查中..."
+                    : wxStatus.loggedIn
+                      ? "微信公众号平台已连接，文章数据自动更新中"
+                      : wxStatus.isPolling
+                        ? "等待扫码确认..."
+                        : "未连接微信公众号平台"}
+                </span>
+              </div>
+
+              {wxStatus?.error && (
+                <p className="text-xs text-red-500">{wxStatus.error}</p>
+              )}
+
+              {/* QR Code */}
+              {(wxStatus?.hasQrCode || wxStatus?.isPolling) && (
+                <div className="flex flex-col items-center gap-2 py-2">
+                  {wxStatus.hasQrCode && (
+                    <div className="p-2 bg-white rounded-lg border border-gray-200">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`/api/admin/wechat/qrcode?t=${qrTs}`}
+                        alt="微信扫码"
+                        className="w-40 h-40 object-contain"
+                      />
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500">
+                    用绑定了公众号的微信扫码
+                  </p>
+                </div>
+              )}
+
+              {/* Actions */}
+              {!wxStatus?.loggedIn && !wxStatus?.isPolling && (
+                <button
+                  onClick={handleRequestQr}
+                  disabled={wxLoading}
+                  className="w-full h-9 rounded-lg bg-green-500 text-white text-xs font-medium
+                             hover:bg-green-600 disabled:opacity-50 transition-colors
+                             flex items-center justify-center gap-1.5"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8.813 2.002c-4.178.32-7.305 3.674-7.305 7.863 0 2.337.891 4.355 2.703 5.932l-.588 1.766 2.053-1.025c.895.277 1.687.416 2.377.416.228 0 .449-.012.667-.035a5.01 5.01 0 01-.2-1.395c0-2.956 2.507-5.361 5.592-5.361.366 0 .724.033 1.072.095-.35-3.48-3.504-6.204-7.171-6.452-.232-.016-.464-.016-.696-.016-.17 0-.34.008-.504.012zm-2.887 4.39c.502 0 .91.406.91.91 0 .502-.408.908-.91.908s-.91-.406-.91-.908c0-.504.408-.91.91-.91zm4.578 0c.502 0 .91.406.91.91 0 .502-.408.908-.91.908s-.91-.406-.91-.908c0-.504.408-.91.91-.91zM14.045 10.836c-2.58 0-4.676 1.908-4.676 4.266 0 2.356 2.096 4.264 4.676 4.264.549 0 1.074-.092 1.564-.264l1.611.803-.459-1.381c1.42-1.24 2.12-2.728 2.12-4.156 0-1.623-1.282-3.307-3.332-4.067a5.164 5.164 0 00-1.504-.465zm-1.586 2.555c.394 0 .714.32.714.714 0 .394-.32.714-.714.714s-.714-.32-.714-.714c0-.394.32-.714.714-.714zm3.172 0c.394 0 .714.32.714.714 0 .394-.32.714-.714.714s-.714-.32-.714-.714c0-.394.32-.714.714-.714z"/>
+                  </svg>
+                  {wxLoading ? "请求中..." : "获取微信登录二维码"}
+                </button>
+              )}
+
+              {wxStatus?.loggedIn && (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-green-600">
+                    已连接 · 公众号文章自动同步
+                  </p>
+                  <button
+                    onClick={async () => {
+                      await fetch("/api/admin/wechat?action=logout", { method: "POST" });
+                      fetchWxStatus();
+                    }}
+                    className="text-xs text-gray-400 hover:text-red-500 transition-colors px-2 py-1 rounded hover:bg-red-50"
+                  >
+                    断开连接
+                  </button>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-300 text-center">
+                仅管理员需要操作，学生用学号登录即可
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

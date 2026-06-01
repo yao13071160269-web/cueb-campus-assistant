@@ -19,6 +19,26 @@ if %errorlevel% neq 0 (
 for /f "tokens=*" %%i in ('node -v') do set NODE_VER=%%i
 echo [OK] Node.js 版本: %NODE_VER%
 
+:: Check Docker (optional)
+where docker >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [INFO] 未检测到 Docker（可选）
+    echo        微信公众号监控已内置，无需 Docker
+    echo        如需使用 we-mp-rss 扩展，可安装 Docker Desktop
+    echo.
+) else (
+    echo [OK] Docker 已安装
+    if exist "docker-compose.yml" (
+        echo [INFO] 检测到 Docker，启动 we-mp-rss 备用服务...
+        docker compose up -d 2>nul
+        if %errorlevel% equ 0 (
+            echo [OK] we-mp-rss 备用服务已启动 (http://localhost:8001)
+        ) else (
+            echo [INFO] Docker 服务未启动，使用内置微信监控
+        )
+    )
+)
+
 :: Create .env.local if not exists
 if not exist ".env.local" (
     echo.
@@ -31,9 +51,7 @@ if not exist ".env.local" (
         echo SESSION_SECRET=f14a5fafd319a53d3de49aa9254d01291e4d0de345c487723325385e8ce94253
         echo WEBHOOK_SECRET=109d9202f13c2e9c99ee408b7c89282416928b27afde0b30f0f08bbf21400f83
         echo WERSS_API_URL=http://localhost:8001
-        echo WERSS_API_KEY=
         echo TAVILY_API_KEY=
-        echo WOLFRAM_APP_ID=
     ) > .env.local
     echo [OK] 环境变量已配置
 ) else (
@@ -55,7 +73,12 @@ echo [OK] 依赖安装完成
 echo.
 echo ========================================
 echo   正在启动服务器...
-echo   浏览器将自动打开 http://localhost:3000
+echo   校园助手：http://localhost:3000
+echo   监控管理：http://localhost:3000/admin
+echo.
+echo   微信公众号监控：
+echo     打开 http://localhost:3000/admin
+echo     点击"获取登录二维码"，用微信扫码即可
 echo.
 echo   按 Ctrl+C 停止服务器
 echo ========================================

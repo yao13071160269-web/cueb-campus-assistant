@@ -40,6 +40,13 @@ data/schedules.json
 # encryption scripts (contain key references)
 scripts/
 
+# wechat services data
+services/
+
+# wechat mp session & qr code (runtime)
+public/wx-qrcode.png
+data/wx-session.json
+
 # vercel
 .vercel
 

@@ -8,25 +8,48 @@ export interface WechatArticle {
   coverImage?: string;
 }
 
-const WERSS_API = process.env.WERSS_API_URL || "http://localhost:8001";
-const WERSS_KEY = process.env.WERSS_API_KEY || "";
+import {
+  getStatus,
+  fetchAllTargetArticles,
+} from "@/lib/wechat-mp-auth";
 
 const ALLOWED_SOURCES = ["首经贸EDA创展", "CUEBCDA", "首都经济贸易大学学生处"];
 
-async function fetchFromWeRSS(): Promise<WechatArticle[]> {
+async function fetchFromBuiltinScraper(): Promise<WechatArticle[]> {
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (WERSS_KEY) headers["Authorization"] = `Bearer ${WERSS_KEY}`;
+    const { loggedIn } = getStatus();
+    if (!loggedIn) return [];
 
-    const res = await fetch(`${WERSS_API}/api/v1/wx/articles?page=1&page_size=20`, {
-      headers,
-      next: { revalidate: 300 },
-    });
+    const articles = await fetchAllTargetArticles();
+    return articles
+      .filter((a) => ALLOWED_SOURCES.some((s) => a.source.includes(s)))
+      .map((a, idx) => ({
+        id: a.aid || String(idx),
+        title: a.title,
+        summary: a.digest,
+        source: a.source,
+        publishTime: a.createTime
+          ? new Date(a.createTime * 1000).toISOString()
+          : "",
+        url: a.link,
+        coverImage: a.cover,
+      }));
+  } catch {
+    return [];
+  }
+}
 
-    if (!res.ok) throw new Error(`WeRSS API error: ${res.status}`);
+async function fetchFromWeRSS(): Promise<WechatArticle[]> {
+  const WERSS_API = process.env.WERSS_API_URL || "http://localhost:8001";
+  try {
+    const res = await fetch(
+      `${WERSS_API}/api/v1/wx/articles?page=1&page_size=20`,
+      { signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return [];
 
     const data = await res.json();
-    const articles: WechatArticle[] = (data.data?.items || data.items || [])
+    return (data.data?.items || data.items || [])
       .map((item: Record<string, string>, idx: number) => ({
         id: item.id || String(idx),
         title: item.title || "",
@@ -39,17 +62,19 @@ async function fetchFromWeRSS(): Promise<WechatArticle[]> {
       .filter((a: WechatArticle) =>
         ALLOWED_SOURCES.some((s) => a.source.includes(s))
       );
-
-    return articles;
   } catch {
     return [];
   }
 }
 
 export async function getWechatArticles(): Promise<WechatArticle[]> {
+  // Priority: built-in scraper → we-mp-rss Docker (if running)
+  const builtinArticles = await fetchFromBuiltinScraper();
+  if (builtinArticles.length > 0) return builtinArticles;
+
   return await fetchFromWeRSS();
 }
 
 export function getNoDataMessage(): string {
-  return "当前未接入微信公众号实时数据源。活动通知仅从「首经贸EDA创展」「CUEBCDA」「首都经济贸易大学学生处」三个官方公众号获取，不提供任何虚构信息。请直接关注以上公众号查看最新活动。";
+  return "当前未接入微信公众号实时数据源。请前往「监控管理」页面扫码登录微信公众号平台。活动通知仅从「首经贸EDA创展」「CUEBCDA」「首都经济贸易大学学生处」三个官方公众号获取，不提供任何虚构信息。";
 }

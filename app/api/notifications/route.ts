@@ -3,7 +3,7 @@ import {
   getUnreadCount,
   markAsRead,
   markAllAsRead,
-  pollWeRSS,
+  pollArticles,
 } from "@/lib/notification-store";
 import { requireAuth } from "@/lib/session";
 import { rateLimitGuard } from "@/lib/rate-limit";
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const unreadOnly = searchParams.get("unread") === "true";
 
-  await pollWeRSS();
+  await pollArticles();
 
   const notifications = getNotifications(unreadOnly);
   const unreadCount = getUnreadCount();
