@@ -9,8 +9,15 @@ import path from "path";
 import crypto from "crypto";
 
 const MP_BASE = "https://mp.weixin.qq.com";
-const QR_IMAGE_PATH = path.join(process.cwd(), "public", "wx-qrcode.png");
-const SESSION_PATH = path.join(process.cwd(), "data", "wx-session.json");
+
+const IS_VERCEL = !!process.env.VERCEL;
+const WRITABLE_DIR = IS_VERCEL ? "/tmp" : process.cwd();
+const QR_IMAGE_PATH = IS_VERCEL
+  ? "/tmp/wx-qrcode.png"
+  : path.join(process.cwd(), "public", "wx-qrcode.png");
+const SESSION_PATH = IS_VERCEL
+  ? "/tmp/wx-session.json"
+  : path.join(process.cwd(), "data", "wx-session.json");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -48,6 +55,7 @@ let session: WxSession | null = null;
 let loginUuid = "";
 let isPolling = false;
 let lastError = "";
+let qrCodeBuffer: Buffer | null = null;
 
 // ── Helpers ──
 
@@ -129,7 +137,7 @@ export function getStatus(): {
 } {
   return {
     loggedIn: !!session,
-    hasQrCode: fs.existsSync(QR_IMAGE_PATH),
+    hasQrCode: !!qrCodeBuffer || fs.existsSync(QR_IMAGE_PATH),
     isPolling,
     error: lastError,
     loginTime: session?.loginTime,
@@ -207,8 +215,11 @@ export async function requestQrCode(): Promise<{
     }
 
     const imgBuf = Buffer.from(await qrRes.arrayBuffer());
-    fs.mkdirSync(path.dirname(QR_IMAGE_PATH), { recursive: true });
-    fs.writeFileSync(QR_IMAGE_PATH, imgBuf);
+    qrCodeBuffer = imgBuf;
+    try {
+      fs.mkdirSync(path.dirname(QR_IMAGE_PATH), { recursive: true });
+      fs.writeFileSync(QR_IMAGE_PATH, imgBuf);
+    } catch { /* Vercel: read-only fs, QR served from memory */ }
 
     // 4. Start polling login status in background
     isPolling = true;
@@ -339,6 +350,7 @@ async function finalizeLogin(
 }
 
 function cleanQrCode(): void {
+  qrCodeBuffer = null;
   try {
     if (fs.existsSync(QR_IMAGE_PATH)) fs.unlinkSync(QR_IMAGE_PATH);
   } catch { /* ignore */ }
@@ -522,6 +534,10 @@ export async function fetchAllTargetArticles(): Promise<
   }
 
   return allArticles;
+}
+
+export function getQrCodeBuffer(): Buffer | null {
+  return qrCodeBuffer;
 }
 
 export { TARGET_ACCOUNTS, QR_IMAGE_PATH };
