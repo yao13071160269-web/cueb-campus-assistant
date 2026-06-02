@@ -102,7 +102,7 @@ export async function pollArticles(): Promise<number> {
     const { getStatus, fetchAllTargetArticles } = await import(
       "@/lib/wechat-mp-auth"
     );
-    const { loggedIn } = getStatus();
+    const { loggedIn } = await getStatus();
     if (loggedIn) {
       const articles = await fetchAllTargetArticles();
       for (const a of articles) {

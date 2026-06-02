@@ -1,23 +1,17 @@
 /**
- * WeChat MP Platform Scraper — TypeScript port of we-mp-rss core auth
+ * WeChat MP Platform Scraper — TypeScript port of we-mp-rss core auth.
  * Handles QR code login, session management, and article fetching
  * via mp.weixin.qq.com APIs.
+ *
+ * Storage: delegated to wx-store.ts (Upstash Redis on Vercel, memory+fs locally).
+ * Polling: client-driven — each call to checkLoginOnce() does ONE check.
  */
 
-import fs from "fs";
-import path from "path";
 import crypto from "crypto";
+import * as store from "./wx-store";
+import type { LoginState } from "./wx-store";
 
 const MP_BASE = "https://mp.weixin.qq.com";
-
-const IS_VERCEL = !!process.env.VERCEL;
-const WRITABLE_DIR = IS_VERCEL ? "/tmp" : process.cwd();
-const QR_IMAGE_PATH = IS_VERCEL
-  ? "/tmp/wx-qrcode.png"
-  : path.join(process.cwd(), "public", "wx-qrcode.png");
-const SESSION_PATH = IS_VERCEL
-  ? "/tmp/wx-session.json"
-  : path.join(process.cwd(), "data", "wx-session.json");
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -49,14 +43,6 @@ export interface WxAccount {
   roundHeadImg: string;
 }
 
-// ── State ──
-
-let session: WxSession | null = null;
-let loginUuid = "";
-let isPolling = false;
-let lastError = "";
-let qrCodeBuffer: Buffer | null = null;
-
 // ── Helpers ──
 
 function uuid(): string {
@@ -80,7 +66,7 @@ function mergeCookies(
   return { ...existing, ...incoming };
 }
 
-function cookieString(cookies: Record<string, string>): string {
+function cookieStr(cookies: Record<string, string>): string {
   return Object.entries(cookies)
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
@@ -95,66 +81,54 @@ function baseHeaders(cookies?: Record<string, string>): Record<string, string> {
     Referer: `${MP_BASE}/`,
   };
   if (cookies && Object.keys(cookies).length > 0) {
-    h["Cookie"] = cookieString(cookies);
+    h["Cookie"] = cookieStr(cookies);
   }
   return h;
 }
 
-// ── Session persistence ──
-
-function saveSession(): void {
-  if (!session) return;
-  try {
-    fs.mkdirSync(path.dirname(SESSION_PATH), { recursive: true });
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(session, null, 2));
-  } catch { /* ignore */ }
-}
-
-function loadSession(): WxSession | null {
-  try {
-    if (!fs.existsSync(SESSION_PATH)) return null;
-    const data = JSON.parse(fs.readFileSync(SESSION_PATH, "utf-8")) as WxSession;
-    if (data.expiresAt && Date.now() > data.expiresAt) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-// ── Init: try restore session on module load ──
-session = loadSession();
-
 // ── Public API ──
 
-/** Current login status */
-export function getStatus(): {
+/** Current login status (async — reads from store) */
+export async function getStatus(): Promise<{
   loggedIn: boolean;
   hasQrCode: boolean;
   isPolling: boolean;
   error: string;
   loginTime?: number;
   expiresAt?: number;
-} {
+}> {
+  const session = await store.getSession();
+  const loginState = await store.getLoginState();
+  const qr = await store.getQrCode();
+
   return {
     loggedIn: !!session,
-    hasQrCode: !!qrCodeBuffer || fs.existsSync(QR_IMAGE_PATH),
-    isPolling,
-    error: lastError,
+    hasQrCode: !!qr,
+    isPolling: !!loginState,
+    error: "",
     loginTime: session?.loginTime,
     expiresAt: session?.expiresAt,
   };
 }
 
-/** Request a new QR code for scanning */
+/**
+ * Request a new QR code for scanning.
+ * Returns { success, message, qrCodeBase64? }.
+ * Does NOT start background polling — the frontend calls checkLoginOnce() repeatedly.
+ */
 export async function requestQrCode(): Promise<{
   success: boolean;
   message: string;
+  qrCodeBase64?: string;
 }> {
-  if (isPolling) {
-    return { success: false, message: "正在等待扫码，请勿重复请求" };
+  const existing = await store.getLoginState();
+  if (existing) {
+    const qr = await store.getQrCode();
+    if (qr) {
+      return { success: true, message: "二维码已存在，请扫码", qrCodeBase64: qr };
+    }
   }
 
-  lastError = "";
   const cookies: Record<string, string> = {};
 
   try {
@@ -190,7 +164,7 @@ export async function requestQrCode(): Promise<{
     );
     Object.assign(cookies, parseCookies(startRes.headers));
 
-    loginUuid = cookies["uuid"] || uuid();
+    const loginUuid = cookies["uuid"] || uuid();
 
     // 3. Download QR code image
     const ts = Date.now();
@@ -204,96 +178,119 @@ export async function requestQrCode(): Promise<{
     });
 
     if (!qrRes.ok) {
-      lastError = `获取二维码失败: HTTP ${qrRes.status}`;
-      return { success: false, message: lastError };
+      return { success: false, message: `获取二维码失败: HTTP ${qrRes.status}` };
     }
 
     const contentType = qrRes.headers.get("content-type") || "";
     if (!contentType.includes("image")) {
-      lastError = "获取二维码失败：返回内容不是图片";
-      return { success: false, message: lastError };
+      return { success: false, message: "获取二维码失败：返回内容不是图片" };
     }
 
     const imgBuf = Buffer.from(await qrRes.arrayBuffer());
-    qrCodeBuffer = imgBuf;
-    try {
-      fs.mkdirSync(path.dirname(QR_IMAGE_PATH), { recursive: true });
-      fs.writeFileSync(QR_IMAGE_PATH, imgBuf);
-    } catch { /* Vercel: read-only fs, QR served from memory */ }
+    const qrCodeBase64 = imgBuf.toString("base64");
 
-    // 4. Start polling login status in background
-    isPolling = true;
-    pollLoginStatus(cookies, fingerprint).catch(() => {
-      isPolling = false;
-    });
+    // 4. Persist login state and QR code to store
+    const loginState: LoginState = {
+      uuid: loginUuid,
+      cookies,
+      fingerprint,
+      createdAt: Date.now(),
+    };
 
-    return { success: true, message: "二维码已生成，请使用微信扫码" };
+    await store.saveLoginState(loginState);
+    await store.saveQrCode(qrCodeBase64);
+
+    return { success: true, message: "二维码已生成，请使用微信扫码", qrCodeBase64 };
   } catch (e) {
-    lastError = `请求失败: ${(e as Error).message}`;
-    return { success: false, message: lastError };
+    return { success: false, message: `请求失败: ${(e as Error).message}` };
   }
 }
 
-/** Background poll for login completion */
-async function pollLoginStatus(
-  cookies: Record<string, string>,
-  fingerprint: string
-): Promise<void> {
-  const maxAttempts = 120; // ~4 minutes
-  for (let i = 0; i < maxAttempts && isPolling; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-
-    try {
-      const askRes = await fetch(
-        `${MP_BASE}/cgi-bin/scanloginqrcode?` +
-          new URLSearchParams({
-            action: "ask",
-            fingerprint,
-            lang: "zh_CN",
-            f: "json",
-            ajax: "1",
-          }),
-        {
-          headers: {
-            ...baseHeaders(cookies),
-            "X-Requested-With": "XMLHttpRequest",
-          },
-        }
-      );
-
-      Object.assign(cookies, parseCookies(askRes.headers));
-      const data = (await askRes.json()) as {
-        status?: number;
-        base_resp?: { ret: number };
-        [key: string]: unknown;
-      };
-
-      if (String(data).includes("invalid session")) {
-        lastError = "会话无效，请重新获取二维码";
-        break;
-      }
-
-      const status = data.status ?? -1;
-
-      if (status === 1 || status === 3) {
-        // Login success — finalize
-        await finalizeLogin(cookies, fingerprint);
-        break;
-      }
-      // status 2/4 = scanned, waiting for confirm — continue polling
-    } catch {
-      // network blip, retry
-    }
+/**
+ * Check login status ONCE. Called by the frontend every 2-3 seconds.
+ * Returns { status: "no_pending" | "waiting" | "scanned" | "success" | "expired" }
+ */
+export async function checkLoginOnce(): Promise<{
+  status: "no_pending" | "waiting" | "scanned" | "success" | "expired";
+  error?: string;
+}> {
+  const loginState = await store.getLoginState();
+  if (!loginState) {
+    return { status: "no_pending" };
   }
 
-  isPolling = false;
-  cleanQrCode();
+  // QR codes expire after ~5 min
+  if (Date.now() - loginState.createdAt > 5 * 60 * 1000) {
+    await store.deleteLoginState();
+    await store.deleteQrCode();
+    return { status: "expired" };
+  }
+
+  const { cookies, fingerprint } = loginState;
+
+  try {
+    const askRes = await fetch(
+      `${MP_BASE}/cgi-bin/scanloginqrcode?` +
+        new URLSearchParams({
+          action: "ask",
+          fingerprint,
+          lang: "zh_CN",
+          f: "json",
+          ajax: "1",
+        }),
+      {
+        headers: {
+          ...baseHeaders(cookies),
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      }
+    );
+
+    const newCookies = parseCookies(askRes.headers);
+    const mergedCookies = mergeCookies(cookies, newCookies);
+
+    const data = (await askRes.json()) as {
+      status?: number;
+      base_resp?: { ret: number };
+      [key: string]: unknown;
+    };
+
+    if (String(data).includes("invalid session")) {
+      await store.deleteLoginState();
+      await store.deleteQrCode();
+      return { status: "expired", error: "会话无效" };
+    }
+
+    const wxStatus = data.status ?? -1;
+
+    if (wxStatus === 1 || wxStatus === 3) {
+      // Login success — finalize
+      const session = await finalizeLogin(mergedCookies, fingerprint);
+      if (session) {
+        await store.deleteLoginState();
+        await store.deleteQrCode();
+        return { status: "success" };
+      }
+      return { status: "waiting", error: "登录完成步骤失败" };
+    }
+
+    if (wxStatus === 2 || wxStatus === 4) {
+      // Scanned, waiting for confirm
+      // Update cookies in login state
+      await store.saveLoginState({ ...loginState, cookies: mergedCookies });
+      return { status: "scanned" };
+    }
+
+    return { status: "waiting" };
+  } catch (e) {
+    return { status: "waiting", error: (e as Error).message };
+  }
 }
 
 async function finalizeLogin(
   cookies: Record<string, string>,
   fingerprint: string
-): Promise<void> {
+): Promise<WxSession | null> {
   try {
     const loginRes = await fetch(
       `${MP_BASE}/cgi-bin/bizlogin?action=login`,
@@ -324,50 +321,37 @@ async function finalizeLogin(
     Object.assign(cookies, parseCookies(loginRes.headers));
     const body = await loginRes.text();
 
-    // Extract token from redirect URL in response
     const tokenMatch = body.match(/token=(\d+)/);
     const token = tokenMatch?.[1] || "";
 
-    if (!token) {
-      lastError = "登录成功但未获取到token";
-      return;
-    }
+    if (!token) return null;
 
-    session = {
+    const session: WxSession = {
       token,
       cookies,
-      cookieString: cookieString(cookies),
+      cookieString: cookieStr(cookies),
       fingerprint,
       loginTime: Date.now(),
-      expiresAt: Date.now() + 4 * 24 * 3600 * 1000, // ~4 days
+      expiresAt: Date.now() + 4 * 24 * 3600 * 1000,
     };
 
-    saveSession();
-    lastError = "";
-  } catch (e) {
-    lastError = `登录完成步骤失败: ${(e as Error).message}`;
+    await store.saveSession(session);
+    return session;
+  } catch {
+    return null;
   }
 }
 
-function cleanQrCode(): void {
-  qrCodeBuffer = null;
-  try {
-    if (fs.existsSync(QR_IMAGE_PATH)) fs.unlinkSync(QR_IMAGE_PATH);
-  } catch { /* ignore */ }
-}
-
 /** Force logout */
-export function logout(): void {
-  session = null;
-  isPolling = false;
-  cleanQrCode();
-  try {
-    if (fs.existsSync(SESSION_PATH)) fs.unlinkSync(SESSION_PATH);
-  } catch { /* ignore */ }
+export async function logout(): Promise<void> {
+  await store.deleteSession();
+  await store.deleteLoginState();
+  await store.deleteQrCode();
 }
 
 /** Verify current session is still valid */
 export async function verifySession(): Promise<boolean> {
+  const session = await store.getSession();
   if (!session) return false;
   try {
     const res = await fetch(
@@ -377,11 +361,9 @@ export async function verifySession(): Promise<boolean> {
         redirect: "manual",
       }
     );
-    // If we get redirected to login page, session is invalid
     const location = res.headers.get("location") || "";
     if (location.includes("loginpage") || res.status === 302) {
-      session = null;
-      try { fs.unlinkSync(SESSION_PATH); } catch { /* */ }
+      await store.deleteSession();
       return false;
     }
     return true;
@@ -393,9 +375,8 @@ export async function verifySession(): Promise<boolean> {
 // ── Article Fetching ──
 
 /** Search for a WeChat Official Account by name */
-export async function searchAccount(
-  query: string
-): Promise<WxAccount[]> {
+export async function searchAccount(query: string): Promise<WxAccount[]> {
+  const session = await store.getSession();
   if (!session) return [];
 
   try {
@@ -445,6 +426,7 @@ export async function fetchArticles(
   begin = 0,
   count = 10
 ): Promise<WxArticle[]> {
+  const session = await store.getSession();
   if (!session) return [];
 
   try {
@@ -502,11 +484,12 @@ const TARGET_ACCOUNTS = [
   "首都经济贸易大学学生处",
 ];
 
-let accountCache: Map<string, string> = new Map(); // name → fakeid
+const accountCache: Map<string, string> = new Map(); // name → fakeid
 
 export async function fetchAllTargetArticles(): Promise<
   Array<WxArticle & { source: string }>
 > {
+  const session = await store.getSession();
   if (!session) return [];
 
   const allArticles: Array<WxArticle & { source: string }> = [];
@@ -519,7 +502,6 @@ export async function fetchAllTargetArticles(): Promise<
         fakeid = results[0].fakeid;
         accountCache.set(name, fakeid);
       }
-      // Rate limit: WeChat MP has request frequency limits
       await new Promise((r) => setTimeout(r, 1500));
     }
 
@@ -536,8 +518,4 @@ export async function fetchAllTargetArticles(): Promise<
   return allArticles;
 }
 
-export function getQrCodeBuffer(): Buffer | null {
-  return qrCodeBuffer;
-}
-
-export { TARGET_ACCOUNTS, QR_IMAGE_PATH };
+export { TARGET_ACCOUNTS };

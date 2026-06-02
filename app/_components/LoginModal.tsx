@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface Student {
   studentId: string;
@@ -27,29 +27,73 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
     error: string;
   } | null>(null);
   const [wxLoading, setWxLoading] = useState(false);
-  const [qrTs, setQrTs] = useState(0);
+  const [qrBase64, setQrBase64] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchWxStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/wechat?action=status");
       const data = await res.json();
       setWxStatus(data);
+      if (data.loggedIn) {
+        setQrBase64(null);
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }
     } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
     if (!showWxPanel) return;
     fetchWxStatus();
-    const iv = setInterval(fetchWxStatus, 3000);
+    const iv = setInterval(fetchWxStatus, 5000);
     return () => clearInterval(iv);
   }, [showWxPanel, fetchWxStatus]);
+
+  // Cleanup poll interval on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  function startLoginPolling() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch("/api/admin/wechat?action=poll-login");
+        const data = await res.json();
+        if (data.status === "success") {
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+          setQrBase64(null);
+          fetchWxStatus();
+        } else if (data.status === "expired" || data.status === "no_pending") {
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+          setQrBase64(null);
+          fetchWxStatus();
+        }
+      } catch { /* ignore */ }
+    }, 2500);
+  }
 
   async function handleRequestQr() {
     setWxLoading(true);
     try {
       const res = await fetch("/api/admin/wechat?action=qrcode", { method: "POST" });
       const data = await res.json();
-      if (data.success) setQrTs(Date.now());
+      if (data.success && data.qrCodeBase64) {
+        setQrBase64(data.qrCodeBase64);
+        startLoginPolling();
+      }
+      fetchWxStatus();
     } catch { /* ignore */ }
     setWxLoading(false);
   }
@@ -81,6 +125,9 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
       setLoading(false);
     }
   }
+
+  const showQr = qrBase64 || wxStatus?.hasQrCode;
+  const isWaiting = wxStatus?.isPolling || !!pollRef.current;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
@@ -169,7 +216,7 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
                       ? "bg-gray-300"
                       : wxStatus.loggedIn
                         ? "bg-green-400"
-                        : wxStatus.isPolling
+                        : isWaiting
                           ? "bg-yellow-400 animate-pulse"
                           : "bg-red-400"
                   }`}
@@ -179,7 +226,7 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
                     ? "检查中..."
                     : wxStatus.loggedIn
                       ? "微信公众号平台已连接，文章数据自动更新中"
-                      : wxStatus.isPolling
+                      : isWaiting
                         ? "等待扫码确认..."
                         : "未连接微信公众号平台"}
                 </span>
@@ -190,18 +237,18 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
               )}
 
               {/* QR Code */}
-              {(wxStatus?.hasQrCode || wxStatus?.isPolling) && (
+              {showQr && (
                 <div className="flex flex-col items-center gap-2 py-2">
-                  {wxStatus.hasQrCode && (
-                    <div className="p-2 bg-white rounded-lg border border-gray-200">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={`/api/admin/wechat/qrcode?t=${qrTs}`}
-                        alt="微信扫码"
-                        className="w-40 h-40 object-contain"
-                      />
-                    </div>
-                  )}
+                  <div className="p-2 bg-white rounded-lg border border-gray-200">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={qrBase64
+                        ? `data:image/png;base64,${qrBase64}`
+                        : `/api/admin/wechat/qrcode?t=${Date.now()}`}
+                      alt="微信扫码"
+                      className="w-40 h-40 object-contain"
+                    />
+                  </div>
                   <p className="text-xs text-gray-500">
                     用绑定了公众号的微信扫码
                   </p>
@@ -209,7 +256,7 @@ export default function LoginModal({ onLogin }: LoginModalProps) {
               )}
 
               {/* Actions */}
-              {!wxStatus?.loggedIn && !wxStatus?.isPolling && (
+              {!wxStatus?.loggedIn && !isWaiting && (
                 <button
                   onClick={handleRequestQr}
                   disabled={wxLoading}

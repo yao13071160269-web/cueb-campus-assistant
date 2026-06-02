@@ -2,6 +2,7 @@ import { rateLimitGuard } from "@/lib/rate-limit";
 import {
   getStatus,
   requestQrCode,
+  checkLoginOnce,
   logout,
   verifySession,
   searchAccount,
@@ -9,7 +10,7 @@ import {
 } from "@/lib/wechat-mp-auth";
 
 export async function GET(request: Request) {
-  const blocked = rateLimitGuard(request, 20);
+  const blocked = rateLimitGuard(request, 30);
   if (blocked) return blocked;
 
   const { searchParams } = new URL(request.url);
@@ -17,7 +18,12 @@ export async function GET(request: Request) {
 
   switch (action) {
     case "status":
-      return Response.json(getStatus());
+      return Response.json(await getStatus());
+
+    case "poll-login": {
+      const result = await checkLoginOnce();
+      return Response.json(result);
+    }
 
     case "verify": {
       const valid = await verifySession();
@@ -56,7 +62,7 @@ export async function POST(request: Request) {
     }
 
     case "logout": {
-      logout();
+      await logout();
       return Response.json({ success: true });
     }
 

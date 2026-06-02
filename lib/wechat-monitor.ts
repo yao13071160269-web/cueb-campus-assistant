@@ -17,7 +17,7 @@ const ALLOWED_SOURCES = ["首经贸EDA创展", "CUEBCDA", "首都经济贸易大
 
 async function fetchFromBuiltinScraper(): Promise<WechatArticle[]> {
   try {
-    const { loggedIn } = getStatus();
+    const { loggedIn } = await getStatus();
     if (!loggedIn) return [];
 
     const articles = await fetchAllTargetArticles();
