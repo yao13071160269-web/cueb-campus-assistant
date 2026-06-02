@@ -3,18 +3,37 @@
  * Handles QR code login, session management, and article fetching
  * via mp.weixin.qq.com APIs.
  *
- * Storage: delegated to wx-store.ts (Upstash Redis on Vercel, memory+fs locally).
- * Polling: client-driven — each call to checkLoginOnce() does ONE check.
+ * Architecture: KV-backed (Upstash Redis on Vercel, in-memory locally).
+ * Login polling is driven by client-side requests, not a server-side loop,
+ * to stay within Vercel's serverless function timeout limits.
  */
 
+import fs from "fs";
+import path from "path";
 import crypto from "crypto";
-import * as store from "./wx-store";
-import type { LoginState } from "./wx-store";
+import { kv } from "@/lib/kv-store";
 
 const MP_BASE = "https://mp.weixin.qq.com";
-
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+const KV_SESSION = "wx:session";
+const KV_QR_IMAGE = "wx:qrcode";
+const KV_LOGIN_STATE = "wx:login-state";
+const KV_ACCOUNT_CACHE = "wx:account-cache";
+
+const SESSION_TTL = 4 * 24 * 3600; // 4 days
+const QR_TTL = 300; // 5 minutes
+const LOGIN_STATE_TTL = 300; // 5 minutes
+
+// Local filesystem paths (used as secondary cache in local dev only)
+const IS_VERCEL = !!process.env.VERCEL;
+const QR_IMAGE_PATH = IS_VERCEL
+  ? "/tmp/wx-qrcode.png"
+  : path.join(process.cwd(), "public", "wx-qrcode.png");
+const SESSION_PATH = IS_VERCEL
+  ? "/tmp/wx-session.json"
+  : path.join(process.cwd(), "data", "wx-session.json");
 
 // ── Types ──
 
@@ -25,6 +44,13 @@ export interface WxSession {
   fingerprint: string;
   loginTime: number;
   expiresAt: number;
+}
+
+interface LoginState {
+  cookies: Record<string, string>;
+  fingerprint: string;
+  uuid: string;
+  createdAt: number;
 }
 
 export interface WxArticle {
@@ -43,9 +69,14 @@ export interface WxAccount {
   roundHeadImg: string;
 }
 
+// ── In-process cache (survives within same invocation / local dev) ──
+
+let cachedSession: WxSession | null = null;
+let cachedQrBuffer: Buffer | null = null;
+
 // ── Helpers ──
 
-function uuid(): string {
+function genUuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
@@ -57,13 +88,6 @@ function parseCookies(headers: Headers): Record<string, string> {
     if (m) out[m[1].trim()] = m[2].trim();
   }
   return out;
-}
-
-function mergeCookies(
-  existing: Record<string, string>,
-  incoming: Record<string, string>
-): Record<string, string> {
-  return { ...existing, ...incoming };
 }
 
 function cookieStr(cookies: Record<string, string>): string {
@@ -86,9 +110,93 @@ function baseHeaders(cookies?: Record<string, string>): Record<string, string> {
   return h;
 }
 
+// ── Session persistence (KV primary, filesystem secondary for local) ──
+
+async function saveSession(s: WxSession): Promise<void> {
+  cachedSession = s;
+  await kv.set(KV_SESSION, s, SESSION_TTL);
+
+  // Also save to local filesystem for local dev restart persistence
+  if (!IS_VERCEL) {
+    try {
+      fs.mkdirSync(path.dirname(SESSION_PATH), { recursive: true });
+      fs.writeFileSync(SESSION_PATH, JSON.stringify(s, null, 2));
+    } catch { /* ignore */ }
+  }
+}
+
+async function loadSession(): Promise<WxSession | null> {
+  // 1. In-process cache
+  if (cachedSession) {
+    if (cachedSession.expiresAt && Date.now() > cachedSession.expiresAt) {
+      cachedSession = null;
+    } else {
+      return cachedSession;
+    }
+  }
+
+  // 2. KV store
+  try {
+    const s = await kv.get<WxSession>(KV_SESSION);
+    if (s && s.expiresAt && Date.now() < s.expiresAt) {
+      cachedSession = s;
+      return s;
+    }
+  } catch { /* KV unavailable */ }
+
+  // 3. Local filesystem (local dev only)
+  if (!IS_VERCEL) {
+    try {
+      if (fs.existsSync(SESSION_PATH)) {
+        const data = JSON.parse(
+          fs.readFileSync(SESSION_PATH, "utf-8")
+        ) as WxSession;
+        if (data.expiresAt && Date.now() < data.expiresAt) {
+          cachedSession = data;
+          await kv.set(KV_SESSION, data, SESSION_TTL).catch(() => {});
+          return data;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  return null;
+}
+
+async function clearSession(): Promise<void> {
+  cachedSession = null;
+  await kv.del(KV_SESSION).catch(() => {});
+  if (!IS_VERCEL) {
+    try { if (fs.existsSync(SESSION_PATH)) fs.unlinkSync(SESSION_PATH); } catch { /* */ }
+  }
+}
+
+// ── QR code storage ──
+
+async function saveQrCode(buf: Buffer): Promise<void> {
+  cachedQrBuffer = buf;
+  const b64 = buf.toString("base64");
+  await kv.set(KV_QR_IMAGE, b64, QR_TTL);
+
+  if (!IS_VERCEL) {
+    try {
+      fs.mkdirSync(path.dirname(QR_IMAGE_PATH), { recursive: true });
+      fs.writeFileSync(QR_IMAGE_PATH, buf);
+    } catch { /* ignore */ }
+  }
+}
+
+async function cleanQrCode(): Promise<void> {
+  cachedQrBuffer = null;
+  await kv.del(KV_QR_IMAGE).catch(() => {});
+  await kv.del(KV_LOGIN_STATE).catch(() => {});
+  if (!IS_VERCEL) {
+    try { if (fs.existsSync(QR_IMAGE_PATH)) fs.unlinkSync(QR_IMAGE_PATH); } catch { /* */ }
+  }
+}
+
 // ── Public API ──
 
-/** Current login status (async — reads from store) */
 export async function getStatus(): Promise<{
   loggedIn: boolean;
   hasQrCode: boolean;
@@ -97,50 +205,46 @@ export async function getStatus(): Promise<{
   loginTime?: number;
   expiresAt?: number;
 }> {
-  const session = await store.getSession();
-  const loginState = await store.getLoginState();
-  const qr = await store.getQrCode();
+  const s = await loadSession();
+  const loginState = await kv.get<LoginState>(KV_LOGIN_STATE).catch(() => null);
+  const hasQr =
+    !!cachedQrBuffer ||
+    !!(await kv.get(KV_QR_IMAGE).catch(() => null)) ||
+    (!IS_VERCEL && fs.existsSync(QR_IMAGE_PATH));
 
   return {
-    loggedIn: !!session,
-    hasQrCode: !!qr,
+    loggedIn: !!s,
+    hasQrCode: hasQr,
     isPolling: !!loginState,
     error: "",
-    loginTime: session?.loginTime,
-    expiresAt: session?.expiresAt,
+    loginTime: s?.loginTime,
+    expiresAt: s?.expiresAt,
   };
 }
 
 /**
- * Request a new QR code for scanning.
- * Returns { success, message, qrCodeBase64? }.
- * Does NOT start background polling — the frontend calls checkLoginOnce() repeatedly.
+ * Step 1 of login: generate QR code.
+ * Returns immediately. Client must then poll `pollOnce()`.
  */
 export async function requestQrCode(): Promise<{
   success: boolean;
   message: string;
-  qrCodeBase64?: string;
 }> {
-  const existing = await store.getLoginState();
-  if (existing) {
-    const qr = await store.getQrCode();
-    if (qr) {
-      return { success: true, message: "二维码已存在，请扫码", qrCodeBase64: qr };
-    }
+  const existingState = await kv.get<LoginState>(KV_LOGIN_STATE).catch(() => null);
+  if (existingState && Date.now() - existingState.createdAt < 240_000) {
+    return { success: false, message: "正在等待扫码，请勿重复请求" };
   }
 
   const cookies: Record<string, string> = {};
 
   try {
-    // 1. Visit login page to get initial cookies
     const pageRes = await fetch(MP_BASE + "/", {
       headers: baseHeaders(),
       redirect: "manual",
     });
     Object.assign(cookies, parseCookies(pageRes.headers));
 
-    // 2. Start login flow
-    const fingerprint = uuid();
+    const fingerprint = genUuid();
     const startRes = await fetch(
       `${MP_BASE}/cgi-bin/bizlogin?action=startlogin`,
       {
@@ -164,11 +268,10 @@ export async function requestQrCode(): Promise<{
     );
     Object.assign(cookies, parseCookies(startRes.headers));
 
-    const loginUuid = cookies["uuid"] || uuid();
+    const uuid = cookies["uuid"] || genUuid();
 
-    // 3. Download QR code image
     const ts = Date.now();
-    const qrUrl = `${MP_BASE}/cgi-bin/scanloginqrcode?action=getqrcode&uuid=${loginUuid}&random=${ts}`;
+    const qrUrl = `${MP_BASE}/cgi-bin/scanloginqrcode?action=getqrcode&uuid=${uuid}&random=${ts}`;
     const qrRes = await fetch(qrUrl, {
       headers: {
         ...baseHeaders(cookies),
@@ -187,43 +290,39 @@ export async function requestQrCode(): Promise<{
     }
 
     const imgBuf = Buffer.from(await qrRes.arrayBuffer());
-    const qrCodeBase64 = imgBuf.toString("base64");
+    await saveQrCode(imgBuf);
 
-    // 4. Persist login state and QR code to store
+    // Save login state to KV so subsequent pollOnce() calls can continue
     const loginState: LoginState = {
-      uuid: loginUuid,
       cookies,
       fingerprint,
+      uuid,
       createdAt: Date.now(),
     };
+    await kv.set(KV_LOGIN_STATE, loginState, LOGIN_STATE_TTL);
 
-    await store.saveLoginState(loginState);
-    await store.saveQrCode(qrCodeBase64);
-
-    return { success: true, message: "二维码已生成，请使用微信扫码", qrCodeBase64 };
+    return { success: true, message: "二维码已生成，请使用微信扫码" };
   } catch (e) {
     return { success: false, message: `请求失败: ${(e as Error).message}` };
   }
 }
 
 /**
- * Check login status ONCE. Called by the frontend every 2-3 seconds.
- * Returns { status: "no_pending" | "waiting" | "scanned" | "success" | "expired" }
+ * Step 2: single poll check. Client calls this every 2-3 seconds.
+ * Returns: "waiting" | "scanned" | "success" | "expired" | "error"
  */
-export async function checkLoginOnce(): Promise<{
-  status: "no_pending" | "waiting" | "scanned" | "success" | "expired";
-  error?: string;
+export async function pollOnce(): Promise<{
+  status: "waiting" | "scanned" | "success" | "expired" | "error";
+  message: string;
 }> {
-  const loginState = await store.getLoginState();
+  const loginState = await kv.get<LoginState>(KV_LOGIN_STATE).catch(() => null);
   if (!loginState) {
-    return { status: "no_pending" };
+    return { status: "expired", message: "登录状态已过期，请重新获取二维码" };
   }
 
-  // QR codes expire after ~5 min
-  if (Date.now() - loginState.createdAt > 5 * 60 * 1000) {
-    await store.deleteLoginState();
-    await store.deleteQrCode();
-    return { status: "expired" };
+  if (Date.now() - loginState.createdAt > 240_000) {
+    await cleanQrCode();
+    return { status: "expired", message: "二维码已过期，请重新获取" };
   }
 
   const { cookies, fingerprint } = loginState;
@@ -247,7 +346,9 @@ export async function checkLoginOnce(): Promise<{
     );
 
     const newCookies = parseCookies(askRes.headers);
-    const mergedCookies = mergeCookies(cookies, newCookies);
+    Object.assign(cookies, newCookies);
+    // Persist updated cookies back to KV
+    await kv.set(KV_LOGIN_STATE, { ...loginState, cookies }, LOGIN_STATE_TTL);
 
     const data = (await askRes.json()) as {
       status?: number;
@@ -255,115 +356,100 @@ export async function checkLoginOnce(): Promise<{
       [key: string]: unknown;
     };
 
-    if (String(data).includes("invalid session")) {
-      await store.deleteLoginState();
-      await store.deleteQrCode();
-      return { status: "expired", error: "会话无效" };
+    if (String(JSON.stringify(data)).includes("invalid session")) {
+      await cleanQrCode();
+      return { status: "error", message: "会话无效，请重新获取二维码" };
     }
 
     const wxStatus = data.status ?? -1;
 
     if (wxStatus === 1 || wxStatus === 3) {
-      // Login success — finalize
-      const session = await finalizeLogin(mergedCookies, fingerprint);
-      if (session) {
-        await store.deleteLoginState();
-        await store.deleteQrCode();
-        return { status: "success" };
-      }
-      return { status: "waiting", error: "登录完成步骤失败" };
+      // Login confirmed — finalize
+      await finalizeLogin(cookies, fingerprint);
+      await cleanQrCode();
+      return { status: "success", message: "登录成功" };
     }
 
     if (wxStatus === 2 || wxStatus === 4) {
-      // Scanned, waiting for confirm
-      // Update cookies in login state
-      await store.saveLoginState({ ...loginState, cookies: mergedCookies });
-      return { status: "scanned" };
+      return { status: "scanned", message: "已扫码，请在手机上确认" };
     }
 
-    return { status: "waiting" };
+    return { status: "waiting", message: "等待扫码..." };
   } catch (e) {
-    return { status: "waiting", error: (e as Error).message };
+    return { status: "error", message: `轮询失败: ${(e as Error).message}` };
   }
 }
 
 async function finalizeLogin(
   cookies: Record<string, string>,
   fingerprint: string
-): Promise<WxSession | null> {
-  try {
-    const loginRes = await fetch(
-      `${MP_BASE}/cgi-bin/bizlogin?action=login`,
-      {
-        method: "POST",
-        headers: {
-          ...baseHeaders(cookies),
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        body: new URLSearchParams({
-          userlang: "zh_CN",
-          redirect_url: "",
-          cookie_forbidden: "0",
-          cookie_cleaned: "0",
-          plugin_used: "0",
-          login_type: "3",
-          fingerprint,
-          token: "",
-          lang: "zh_CN",
-          f: "json",
-          ajax: "1",
-        }).toString(),
-        redirect: "manual",
-      }
-    );
+): Promise<void> {
+  const loginRes = await fetch(
+    `${MP_BASE}/cgi-bin/bizlogin?action=login`,
+    {
+      method: "POST",
+      headers: {
+        ...baseHeaders(cookies),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: new URLSearchParams({
+        userlang: "zh_CN",
+        redirect_url: "",
+        cookie_forbidden: "0",
+        cookie_cleaned: "0",
+        plugin_used: "0",
+        login_type: "3",
+        fingerprint,
+        token: "",
+        lang: "zh_CN",
+        f: "json",
+        ajax: "1",
+      }).toString(),
+      redirect: "manual",
+    }
+  );
 
-    Object.assign(cookies, parseCookies(loginRes.headers));
-    const body = await loginRes.text();
+  Object.assign(cookies, parseCookies(loginRes.headers));
+  const body = await loginRes.text();
 
-    const tokenMatch = body.match(/token=(\d+)/);
-    const token = tokenMatch?.[1] || "";
+  const tokenMatch = body.match(/token=(\d+)/);
+  const token = tokenMatch?.[1] || "";
+  if (!token) throw new Error("登录成功但未获取到token");
 
-    if (!token) return null;
+  const s: WxSession = {
+    token,
+    cookies,
+    cookieString: cookieStr(cookies),
+    fingerprint,
+    loginTime: Date.now(),
+    expiresAt: Date.now() + 4 * 24 * 3600 * 1000,
+  };
 
-    const session: WxSession = {
-      token,
-      cookies,
-      cookieString: cookieStr(cookies),
-      fingerprint,
-      loginTime: Date.now(),
-      expiresAt: Date.now() + 4 * 24 * 3600 * 1000,
-    };
-
-    await store.saveSession(session);
-    return session;
-  } catch {
-    return null;
-  }
+  await saveSession(s);
 }
 
 /** Force logout */
 export async function logout(): Promise<void> {
-  await store.deleteSession();
-  await store.deleteLoginState();
-  await store.deleteQrCode();
+  await clearSession();
+  await cleanQrCode();
 }
 
 /** Verify current session is still valid */
 export async function verifySession(): Promise<boolean> {
-  const session = await store.getSession();
-  if (!session) return false;
+  const s = await loadSession();
+  if (!s) return false;
   try {
     const res = await fetch(
-      `${MP_BASE}/cgi-bin/home?t=home/index&lang=zh_CN&token=${session.token}`,
+      `${MP_BASE}/cgi-bin/home?t=home/index&lang=zh_CN&token=${s.token}`,
       {
-        headers: baseHeaders(session.cookies),
+        headers: baseHeaders(s.cookies),
         redirect: "manual",
       }
     );
     const location = res.headers.get("location") || "";
     if (location.includes("loginpage") || res.status === 302) {
-      await store.deleteSession();
+      await clearSession();
       return false;
     }
     return true;
@@ -372,12 +458,37 @@ export async function verifySession(): Promise<boolean> {
   }
 }
 
+/** Get QR code image as Buffer */
+export async function getQrCodeImage(): Promise<Buffer | null> {
+  if (cachedQrBuffer) return cachedQrBuffer;
+
+  // Try KV
+  try {
+    const b64 = await kv.get<string>(KV_QR_IMAGE);
+    if (b64) {
+      const buf = Buffer.from(b64, "base64");
+      cachedQrBuffer = buf;
+      return buf;
+    }
+  } catch { /* KV unavailable */ }
+
+  // Try filesystem (local dev)
+  if (!IS_VERCEL) {
+    try {
+      if (fs.existsSync(QR_IMAGE_PATH)) {
+        return fs.readFileSync(QR_IMAGE_PATH);
+      }
+    } catch { /* ignore */ }
+  }
+
+  return null;
+}
+
 // ── Article Fetching ──
 
-/** Search for a WeChat Official Account by name */
 export async function searchAccount(query: string): Promise<WxAccount[]> {
-  const session = await store.getSession();
-  if (!session) return [];
+  const s = await loadSession();
+  if (!s) return [];
 
   try {
     const url =
@@ -387,7 +498,7 @@ export async function searchAccount(query: string): Promise<WxAccount[]> {
         begin: "0",
         count: "5",
         query,
-        token: session.token,
+        token: s.token,
         lang: "zh_CN",
         f: "json",
         ajax: "1",
@@ -395,7 +506,7 @@ export async function searchAccount(query: string): Promise<WxAccount[]> {
 
     const res = await fetch(url, {
       headers: {
-        ...baseHeaders(session.cookies),
+        ...baseHeaders(s.cookies),
         "X-Requested-With": "XMLHttpRequest",
       },
     });
@@ -420,14 +531,13 @@ export async function searchAccount(query: string): Promise<WxAccount[]> {
   }
 }
 
-/** Fetch articles from a specific account by fakeid */
 export async function fetchArticles(
   fakeid: string,
   begin = 0,
   count = 10
 ): Promise<WxArticle[]> {
-  const session = await store.getSession();
-  if (!session) return [];
+  const s = await loadSession();
+  if (!s) return [];
 
   try {
     const url =
@@ -439,7 +549,7 @@ export async function fetchArticles(
         fakeid,
         type: "9",
         query: "",
-        token: session.token,
+        token: s.token,
         lang: "zh_CN",
         f: "json",
         ajax: "1",
@@ -447,7 +557,7 @@ export async function fetchArticles(
 
     const res = await fetch(url, {
       headers: {
-        ...baseHeaders(session.cookies),
+        ...baseHeaders(s.cookies),
         "X-Requested-With": "XMLHttpRequest",
       },
     });
@@ -484,23 +594,29 @@ const TARGET_ACCOUNTS = [
   "首都经济贸易大学学生处",
 ];
 
-const accountCache: Map<string, string> = new Map(); // name → fakeid
-
 export async function fetchAllTargetArticles(): Promise<
   Array<WxArticle & { source: string }>
 > {
-  const session = await store.getSession();
-  if (!session) return [];
+  const s = await loadSession();
+  if (!s) return [];
+
+  // Load account cache from KV
+  let accountMap: Record<string, string> = {};
+  try {
+    const cached = await kv.get<Record<string, string>>(KV_ACCOUNT_CACHE);
+    if (cached) accountMap = cached;
+  } catch { /* ignore */ }
 
   const allArticles: Array<WxArticle & { source: string }> = [];
 
   for (const name of TARGET_ACCOUNTS) {
-    let fakeid = accountCache.get(name);
+    let fakeid = accountMap[name];
     if (!fakeid) {
       const results = await searchAccount(name);
       if (results.length > 0) {
         fakeid = results[0].fakeid;
-        accountCache.set(name, fakeid);
+        accountMap[name] = fakeid;
+        await kv.set(KV_ACCOUNT_CACHE, accountMap, SESSION_TTL).catch(() => {});
       }
       await new Promise((r) => setTimeout(r, 1500));
     }

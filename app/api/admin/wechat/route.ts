@@ -2,7 +2,7 @@ import { rateLimitGuard } from "@/lib/rate-limit";
 import {
   getStatus,
   requestQrCode,
-  checkLoginOnce,
+  pollOnce,
   logout,
   verifySession,
   searchAccount,
@@ -19,11 +19,6 @@ export async function GET(request: Request) {
   switch (action) {
     case "status":
       return Response.json(await getStatus());
-
-    case "poll-login": {
-      const result = await checkLoginOnce();
-      return Response.json(result);
-    }
 
     case "verify": {
       const valid = await verifySession();
@@ -58,6 +53,11 @@ export async function POST(request: Request) {
   switch (action) {
     case "qrcode": {
       const result = await requestQrCode();
+      return Response.json(result);
+    }
+
+    case "poll": {
+      const result = await pollOnce();
       return Response.json(result);
     }
 
