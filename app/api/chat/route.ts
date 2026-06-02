@@ -19,6 +19,7 @@ function getClient() {
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  images?: string[];
   tool_call_id?: string;
 }
 
@@ -49,6 +50,22 @@ export async function POST(request: Request) {
           content: m.content,
           tool_call_id: m.tool_call_id || "",
         };
+      }
+      if (m.role === "user" && m.images && m.images.length > 0) {
+        const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+        if (m.content && m.content !== "[图片]") {
+          parts.push({ type: "text" as const, text: m.content });
+        }
+        for (const img of m.images) {
+          parts.push({
+            type: "image_url" as const,
+            image_url: { url: img },
+          });
+        }
+        if (parts.length === 0) {
+          parts.push({ type: "text" as const, text: "请描述这张图片" });
+        }
+        return { role: "user" as const, content: parts };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
     }),

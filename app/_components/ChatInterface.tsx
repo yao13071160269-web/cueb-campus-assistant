@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import CamelLoading from "./CamelLoading";
 import BookingCard from "./BookingCard";
 import NotificationCenter from "./NotificationCenter";
@@ -32,6 +34,7 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  images?: string[];
   toolCalls?: ToolCallInfo[];
 }
 
@@ -50,12 +53,71 @@ const QUICK_ACTIONS = [
   { label: "解压一下", query: "学长，我期末压力好大啊..." },
 ];
 
-function renderContent(text: string) {
-  let html = text
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n/g, "<br/>");
-  return <span className="chat-content" dangerouslySetInnerHTML={{ __html: html }} />;
+function MarkdownContent({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        table: ({ children }) => (
+          <div className="overflow-x-auto my-2">
+            <table className="min-w-full text-xs border-collapse border border-gray-200 rounded-lg overflow-hidden">
+              {children}
+            </table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-gray-50">{children}</thead>
+        ),
+        th: ({ children }) => (
+          <th className="px-3 py-1.5 text-left font-semibold text-gray-700 border border-gray-200">
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td className="px-3 py-1.5 text-gray-600 border border-gray-200">
+            {children}
+          </td>
+        ),
+        strong: ({ children }) => (
+          <strong className="font-semibold">{children}</strong>
+        ),
+        code: ({ children, className }) => {
+          const isBlock = className?.includes("language-");
+          return isBlock ? (
+            <pre className="bg-gray-800 text-gray-100 rounded-lg px-3 py-2 my-2 overflow-x-auto text-xs">
+              <code>{children}</code>
+            </pre>
+          ) : (
+            <code className="bg-gray-100 text-cueb-red px-1 py-0.5 rounded text-xs">
+              {children}
+            </code>
+          );
+        },
+        ul: ({ children }) => (
+          <ul className="list-disc ml-4 my-1 space-y-0.5">{children}</ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="list-decimal ml-4 my-1 space-y-0.5">{children}</ol>
+        ),
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noopener noreferrer"
+             className="text-cueb-red underline hover:text-cueb-red-dark">
+            {children}
+          </a>
+        ),
+        h1: ({ children }) => <h1 className="text-base font-bold mt-3 mb-1">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-sm font-bold mt-2 mb-1">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-1">{children}</h3>,
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-3 border-cueb-red/30 pl-3 my-2 text-gray-500 italic">
+            {children}
+          </blockquote>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }
 
 export default function ChatInterface({ student, token, onLogout }: ChatInterfaceProps) {
@@ -66,8 +128,10 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
   const [wxExpired, setWxExpired] = useState(false);
   const [wxExpiringSoon, setWxExpiringSoon] = useState(false);
   const [showWxBanner, setShowWxBanner] = useState(true);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     async function checkWxStatus() {
@@ -110,18 +174,44 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
     ]);
   }, [student]);
 
+  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files) return;
+    Array.from(files).forEach((file) => {
+      if (!file.type.startsWith("image/")) return;
+      if (file.size > 5 * 1024 * 1024) {
+        alert("图片大小不能超过 5MB");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        setPendingImages((prev) => [...prev, base64]);
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  }
+
+  function removePendingImage(index: number) {
+    setPendingImages((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function sendMessage(text?: string) {
     const messageText = text || input.trim();
-    if (!messageText || isLoading) return;
+    if ((!messageText && pendingImages.length === 0) || isLoading) return;
 
+    const images = [...pendingImages];
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: messageText,
+      content: messageText || (images.length > 0 ? "[图片]" : ""),
+      images: images.length > 0 ? images : undefined,
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setPendingImages([]);
     setIsLoading(true);
 
     if (inputRef.current) {
@@ -131,7 +221,11 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
     try {
       const chatHistory = [...messages, userMessage]
         .filter((m) => m.id !== "welcome")
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map((m) => ({
+          role: m.role,
+          content: m.content,
+          images: m.images,
+        }));
 
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -336,8 +430,23 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
                       : "bg-white border border-gray-100 text-gray-800 rounded-bl-md shadow-sm"
                   }`}
                 >
-                  <div className="text-sm leading-relaxed">
-                    {renderContent(message.content)}
+                  {/* User-attached images */}
+                  {message.images && message.images.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {message.images.map((img, i) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img key={i} src={img} alt="上传图片" className="max-w-[200px] max-h-[200px] rounded-lg object-cover" />
+                      ))}
+                    </div>
+                  )}
+
+                  <div className={`text-sm leading-relaxed prose-sm ${
+                    message.role === "user" ? "text-white prose-invert" : "text-gray-800"
+                  }`}>
+                    {message.role === "assistant"
+                      ? <MarkdownContent text={message.content} />
+                      : <span>{message.content}</span>
+                    }
                   </div>
 
                   {/* Booking Cards */}
@@ -397,14 +506,57 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
         {/* Input Area */}
         <div className="border-t border-gray-100 bg-white px-4 py-3 flex-shrink-0">
           <div className="max-w-3xl mx-auto">
-            <div className="flex items-end gap-3">
+            {/* Pending image previews */}
+            {pendingImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {pendingImages.map((img, i) => (
+                  <div key={i} className="relative group">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img} alt="待发送" className="w-16 h-16 rounded-lg object-cover border border-gray-200" />
+                    <button
+                      onClick={() => removePendingImage(i)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs
+                                 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              {/* Image upload */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading}
+                className="flex-shrink-0 w-11 h-11 rounded-xl border border-gray-200 bg-gray-50 text-gray-400
+                           flex items-center justify-center hover:bg-gray-100 hover:text-gray-600
+                           transition-colors disabled:opacity-30"
+                title="上传图片"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <polyline points="21 15 16 10 5 21" />
+                </svg>
+              </button>
+
               <div className="flex-1 relative">
                 <textarea
                   ref={inputRef}
                   value={input}
                   onChange={handleTextareaInput}
                   onKeyDown={handleKeyDown}
-                  placeholder="问问老学长吧..."
+                  placeholder="问问老学长吧...（支持发送图片）"
                   rows={1}
                   disabled={isLoading}
                   className="w-full resize-none rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm
@@ -415,7 +567,7 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
               </div>
               <button
                 onClick={() => sendMessage()}
-                disabled={!input.trim() || isLoading}
+                disabled={(!input.trim() && pendingImages.length === 0) || isLoading}
                 className="flex-shrink-0 w-11 h-11 rounded-xl bg-cueb-red text-white flex items-center justify-center
                            hover:bg-cueb-red-dark transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
