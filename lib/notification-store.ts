@@ -69,8 +69,13 @@ export function addNotification(article: {
 }
 
 export function getNotifications(unreadOnly = false): Notification[] {
-  if (unreadOnly) return notifications.filter((n) => !n.read);
-  return [...notifications];
+  const list = unreadOnly ? notifications.filter((n) => !n.read) : [...notifications];
+  list.sort((a, b) => {
+    const ta = new Date(a.publishTime || a.receivedAt).getTime() || 0;
+    const tb = new Date(b.publishTime || b.receivedAt).getTime() || 0;
+    return tb - ta;
+  });
+  return list;
 }
 
 export function markAsRead(id: string): void {
@@ -88,11 +93,11 @@ export function getUnreadCount(): number {
 
 // ── Poll from built-in scraper or we-mp-rss ──
 
-const POLL_INTERVAL = 5 * 60 * 1000;
+const POLL_INTERVAL = 2 * 60 * 1000;
 
-export async function pollArticles(): Promise<number> {
+export async function pollArticles(force = false): Promise<number> {
   const now = Date.now();
-  if (now - lastPollTime < POLL_INTERVAL) return 0;
+  if (!force && now - lastPollTime < POLL_INTERVAL) return 0;
   lastPollTime = now;
 
   let added = 0;

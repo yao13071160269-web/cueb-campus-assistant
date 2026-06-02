@@ -16,10 +16,18 @@ function getClient() {
   return _client;
 }
 
+interface FileAttachment {
+  name: string;
+  size: number;
+  type: string;
+  content: string;
+}
+
 interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   images?: string[];
+  files?: FileAttachment[];
   tool_call_id?: string;
 }
 
@@ -51,21 +59,39 @@ export async function POST(request: Request) {
           tool_call_id: m.tool_call_id || "",
         };
       }
-      if (m.role === "user" && m.images && m.images.length > 0) {
-        const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
-        if (m.content && m.content !== "[图片]") {
-          parts.push({ type: "text" as const, text: m.content });
+      if (m.role === "user") {
+        let textContent = m.content || "";
+
+        // Prepend file contents
+        if (m.files && m.files.length > 0) {
+          const fileParts = m.files.map((f) =>
+            `[附件: ${f.name}]\n\`\`\`\n${f.content}\n\`\`\``
+          ).join("\n\n");
+          const userQuestion = textContent.startsWith("[发送了")
+            ? "请解读以上文件内容"
+            : textContent;
+          textContent = fileParts + "\n\n" + userQuestion;
         }
-        for (const img of m.images) {
-          parts.push({
-            type: "image_url" as const,
-            image_url: { url: img },
-          });
+
+        // Handle images (multimodal)
+        if (m.images && m.images.length > 0) {
+          const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+          if (textContent && textContent !== "[图片]") {
+            parts.push({ type: "text" as const, text: textContent });
+          }
+          for (const img of m.images) {
+            parts.push({
+              type: "image_url" as const,
+              image_url: { url: img },
+            });
+          }
+          if (parts.length === 0) {
+            parts.push({ type: "text" as const, text: "请描述这张图片" });
+          }
+          return { role: "user" as const, content: parts };
         }
-        if (parts.length === 0) {
-          parts.push({ type: "text" as const, text: "请描述这张图片" });
-        }
-        return { role: "user" as const, content: parts };
+
+        return { role: "user" as const, content: textContent };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
     }),

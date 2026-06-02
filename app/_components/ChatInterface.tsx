@@ -30,11 +30,26 @@ interface ToolCallInfo {
   };
 }
 
+interface FileAttachment {
+  name: string;
+  size: number;
+  type: string;
+  content: string;
+}
+
+interface PendingFile {
+  file: File;
+  name: string;
+  size: number;
+  uploading: boolean;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   images?: string[];
+  files?: FileAttachment[];
   toolCalls?: ToolCallInfo[];
 }
 
@@ -129,9 +144,11 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
   const [wxExpiringSoon, setWxExpiringSoon] = useState(false);
   const [showWxBanner, setShowWxBanner] = useState(true);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     async function checkWxStatus() {
@@ -197,26 +214,88 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
     setPendingImages((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files) return;
+    Array.from(files).forEach((file) => {
+      if (file.size > 10 * 1024 * 1024) {
+        alert("文件大小不能超过 10MB");
+        return;
+      }
+      setPendingFiles((prev) => [
+        ...prev,
+        { file, name: file.name, size: file.size, uploading: false },
+      ]);
+    });
+    e.target.value = "";
+  }
+
+  function removePendingFile(index: number) {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function formatFileSize(bytes: number): string {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  async function uploadFile(pf: PendingFile): Promise<FileAttachment | null> {
+    const formData = new FormData();
+    formData.append("file", pf.file);
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "上传失败");
+      return { name: data.filename, size: data.size, type: data.type, content: data.content };
+    } catch (e) {
+      alert(`文件 "${pf.name}" 解析失败: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
   async function sendMessage(text?: string) {
     const messageText = text || input.trim();
-    if ((!messageText && pendingImages.length === 0) || isLoading) return;
+    const hasImages = pendingImages.length > 0;
+    const hasFiles = pendingFiles.length > 0;
+    if ((!messageText && !hasImages && !hasFiles) || isLoading) return;
 
     const images = [...pendingImages];
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: messageText || (images.length > 0 ? "[图片]" : ""),
-      images: images.length > 0 ? images : undefined,
-    };
+    const filesToUpload = [...pendingFiles];
 
-    setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setPendingImages([]);
+    setPendingFiles([]);
     setIsLoading(true);
 
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
     }
+
+    // Upload files first
+    const uploadedFiles: FileAttachment[] = [];
+    for (const pf of filesToUpload) {
+      const result = await uploadFile(pf);
+      if (result) uploadedFiles.push(result);
+    }
+
+    const displayContent = messageText
+      || (uploadedFiles.length > 0 ? `[发送了 ${uploadedFiles.length} 个文件]` : "")
+      || (hasImages ? "[图片]" : "");
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: displayContent,
+      images: images.length > 0 ? images : undefined,
+      files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
 
     try {
       const chatHistory = [...messages, userMessage]
@@ -225,6 +304,7 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
           role: m.role,
           content: m.content,
           images: m.images,
+          files: m.files,
         }));
 
       const res = await fetch("/api/chat", {
@@ -440,6 +520,24 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
                     </div>
                   )}
 
+                  {/* User-attached files */}
+                  {message.files && message.files.length > 0 && (
+                    <div className="flex flex-col gap-1.5 mb-2">
+                      {message.files.map((f, i) => (
+                        <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
+                          message.role === "user" ? "bg-white/15" : "bg-gray-50 border border-gray-100"
+                        }`}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="flex-shrink-0 opacity-70">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                          </svg>
+                          <span className="truncate font-medium">{f.name}</span>
+                          <span className="opacity-60 flex-shrink-0">{formatFileSize(f.size)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className={`text-sm leading-relaxed prose-sm ${
                     message.role === "user" ? "text-white prose-invert" : "text-gray-800"
                   }`}>
@@ -525,6 +623,28 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
               </div>
             )}
 
+            {/* Pending file previews */}
+            {pendingFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {pendingFiles.map((pf, i) => (
+                  <div key={i} className="relative group flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 text-xs">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-gray-400 flex-shrink-0">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span className="text-gray-700 truncate max-w-[120px]">{pf.name}</span>
+                    <span className="text-gray-400">{formatFileSize(pf.size)}</span>
+                    <button
+                      onClick={() => removePendingFile(i)}
+                      className="ml-1 w-4 h-4 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex items-end gap-2">
               {/* Image upload */}
               <input
@@ -535,6 +655,27 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
                 onChange={handleImageSelect}
                 className="hidden"
               />
+              {/* Document upload */}
+              <input
+                ref={docInputRef}
+                type="file"
+                accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.rtf,.odt,.odp,.ods,.txt,.md,.json,.xml,.yaml,.yml,.html,.css,.js,.ts,.tsx,.jsx,.py,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.sql,.sh,.bat,.vue,.svelte,.toml,.ini,.log,.conf"
+                multiple
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => docInputRef.current?.click()}
+                disabled={isLoading}
+                className="flex-shrink-0 w-11 h-11 rounded-xl border border-gray-200 bg-gray-50 text-gray-400
+                           flex items-center justify-center hover:bg-gray-100 hover:text-gray-600
+                           transition-colors disabled:opacity-30"
+                title="上传文件（PDF/Word/PPT/代码等）"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading}
@@ -567,7 +708,7 @@ export default function ChatInterface({ student, token, onLogout }: ChatInterfac
               </div>
               <button
                 onClick={() => sendMessage()}
-                disabled={(!input.trim() && pendingImages.length === 0) || isLoading}
+                disabled={(!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0) || isLoading}
                 className="flex-shrink-0 w-11 h-11 rounded-xl bg-cueb-red text-white flex items-center justify-center
                            hover:bg-cueb-red-dark transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >

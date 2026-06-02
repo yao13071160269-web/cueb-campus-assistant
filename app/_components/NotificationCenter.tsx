@@ -48,7 +48,7 @@ export default function NotificationCenter({ token }: NotificationCenterProps) {
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 60000);
+    const interval = setInterval(fetchNotifications, 30000);
     return () => clearInterval(interval);
   }, [fetchNotifications]);
 
@@ -234,16 +234,29 @@ function formatTime(timeStr: string): string {
   if (!timeStr) return "";
   try {
     const date = new Date(timeStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
+    if (isNaN(date.getTime())) return timeStr;
+
+    const beijing = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const nowBeijing = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+
+    const diffMs = nowBeijing.getTime() - beijing.getTime();
     const diffMin = Math.floor(diffMs / 60000);
+
     if (diffMin < 1) return "刚刚";
     if (diffMin < 60) return `${diffMin}分钟前`;
+
     const diffHr = Math.floor(diffMin / 60);
     if (diffHr < 24) return `${diffHr}小时前`;
-    const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay}天前`;
-    return `${date.getMonth() + 1}/${date.getDate()}`;
+
+    const y = beijing.getFullYear();
+    const m = beijing.getMonth() + 1;
+    const d = beijing.getDate();
+    const hh = String(beijing.getHours()).padStart(2, "0");
+    const mm = String(beijing.getMinutes()).padStart(2, "0");
+
+    const thisYear = nowBeijing.getFullYear();
+    if (y === thisYear) return `${m}月${d}日 ${hh}:${mm}`;
+    return `${y}年${m}月${d}日 ${hh}:${mm}`;
   } catch {
     return timeStr;
   }
